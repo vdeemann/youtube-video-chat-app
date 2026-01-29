@@ -1,0 +1,14 @@
+{
+  "name": "youtube-video-chat-app-assets",
+  "version": "1.0.0",
+  "description": "Assets for YouTube Video Chat App",
+  "scripts": {
+    "build": "cd .. && mix assets.build",
+    "deploy": "cd .. && mix assets.deploy"
+  },
+  "dependencies": {
+    "phoenix": "file:../deps/phoenix",
+    "phoenix_html": "file:../deps/phoenix_html",
+    "phoenix_live_view": "file:../deps/phoenix_live_view"
+  }
+}

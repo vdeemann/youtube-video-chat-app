@@ -1,0 +1,41 @@
+# Dependencies
+/deps
+/_build
+/assets/node_modules
+
+# Test and docs
+/test
+/doc
+
+# Git
+.git
+.gitignore
+
+# Mac
+.DS_Store
+
+# Editor files
+.idea
+.vscode
+*.swp
+*.swo
+
+# Env files
+.env
+.env.*
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+
+# Misc
+/tmp
+/priv/static/assets
+/priv/static/cache_manifest.json
+*.log
+
+# ElixirLS
+.elixir_ls
+
+# Compiled files
+*.beam

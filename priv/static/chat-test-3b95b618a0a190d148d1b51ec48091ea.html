@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Animation Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+        }
+        
+        .container {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        /* TikTok style float up animation */
+        @keyframes float-up {
+            0% {
+                transform: translateY(0);
+                opacity: 1;
+            }
+            90% {
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(-80vh);
+                opacity: 0;
+            }
+        }
+        
+        .floating-message {
+            position: absolute;
+            bottom: 300px;
+            animation: float-up 7s linear forwards;
+            white-space: nowrap;
+        }
+        
+        .message-bubble {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(8px);
+            border-radius: 999px;
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+        
+        .username {
+            font-weight: 600;
+        }
+        
+        /* Reaction animation */
+        @keyframes bubble-up {
+            0% {
+                transform: translateY(0) scale(0);
+                opacity: 1;
+            }
+            15% {
+                transform: translateY(-20px) scale(1.2);
+            }
+            100% {
+                transform: translateY(-300px) scale(0.8);
+                opacity: 0;
+            }
+        }
+        
+        .reaction {
+            position: absolute;
+            bottom: 100px;
+            right: 20px;
+            font-size: 32px;
+            animation: bubble-up 2s ease-out forwards;
+        }
+        
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+            backdrop-filter: blur(10px);
+        }
+        
+        button:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" id="container">
+        <div class="info">
+            <h3>TikTok/Instagram Style Chat Test</h3>
+            <p>Click buttons below to test animations</p>
+            <p>Messages float up from bottom</p>
+            <p>Reactions bubble up on the right</p>
+        </div>
+        
+        <div class="controls">
+            <button onclick="addMessage()">Send Chat Message</button>
+            <button onclick="addReaction('❤️')">❤️</button>
+            <button onclick="addReaction('🔥')">🔥</button>
+            <button onclick="addReaction('😂')">😂</button>
+            <button onclick="addReaction('👏')">👏</button>
+        </div>
+    </div>
+    
+    <script>
+        const usernames = ['CoolUser', 'EpicGamer', 'StreamFan', 'Viewer123', 'ChillVibes'];
+        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FED766', '#F38181', '#AA96DA'];
+        const messages = [
+            'This is amazing! 🔥',
+            'Love this stream!',
+            'Hello everyone!',
+            'First time here',
+            'Great content!',
+            'So cool!',
+            'Wow!!!',
+            'Nice video',
+            'Keep it up!',
+            'Amazing work!'
+        ];
+        
+        function addMessage() {
+            const container = document.getElementById('container');
+            const message = document.createElement('div');
+            message.className = 'floating-message';
+            
+            // Random horizontal position (10% to 70% from left)
+            const leftPos = 10 + Math.random() * 60;
+            message.style.left = leftPos + '%';
+            
+            // Random vertical start position
+            const bottomPos = 280 + Math.random() * 100;
+            message.style.bottom = bottomPos + 'px';
+            
+            const username = usernames[Math.floor(Math.random() * usernames.length)];
+            const color = colors[Math.floor(Math.random() * colors.length)];
+            const text = messages[Math.floor(Math.random() * messages.length)];
+            
+            message.innerHTML = `
+                <div class="message-bubble">
+                    <span class="username" style="color: ${color}">${username}:</span>
+                    <span>${text}</span>
+                </div>
+            `;
+            
+            container.appendChild(message);
+            
+            // Remove after animation completes
+            setTimeout(() => {
+                message.remove();
+            }, 7000);
+        }
+        
+        function addReaction(emoji) {
+            const container = document.getElementById('container');
+            const reaction = document.createElement('div');
+            reaction.className = 'reaction';
+            reaction.textContent = emoji;
+            
+            // Random horizontal position near right edge
+            const rightPos = 20 + Math.random() * 40;
+            reaction.style.right = rightPos + 'px';
+            
+            container.appendChild(reaction);
+            
+            // Remove after animation completes
+            setTimeout(() => {
+                reaction.remove();
+            }, 2000);
+        }
+        
+        // Auto-generate some messages for demo
+        setInterval(() => {
+            if (Math.random() > 0.7) {
+                addMessage();
+            }
+        }, 2000);
+        
+        // Auto-generate some reactions
+        setInterval(() => {
+            if (Math.random() > 0.8) {
+                const emojis = ['❤️', '🔥', '😂', '👏'];
+                addReaction(emojis[Math.floor(Math.random() * emojis.length)]);
+            }
+        }, 1500);
+        
+        // Initial messages
+        setTimeout(() => addMessage(), 500);
+        setTimeout(() => addMessage(), 1000);
+        setTimeout(() => addMessage(), 1500);
+    </script>
+</body>
+</html>

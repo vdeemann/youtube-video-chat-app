@@ -1,0 +1,354 @@
+<div class="relative w-full h-screen bg-black overflow-hidden" id="room-container" phx-hook="VideoEndedPusher">
+  <!-- Media Player Container - phx-update="ignore" prevents LiveView from ever touching this -->
+  <div class="absolute inset-0 w-full h-full" id="media-container" phx-update="ignore">
+    <!-- Player will be injected here by JavaScript -->
+    <div class="flex items-center justify-center w-full h-full bg-gray-900" id="no-media-placeholder">
+      <div class="text-center">
+        <svg class="w-24 h-24 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <p class="text-white text-xl mb-2">No media playing</p>
+        <p class="text-gray-400 text-sm">Add a YouTube video or SoundCloud track to get started</p>
+      </div>
+    </div>
+  </div>
+  
+  <!-- All UI elements on top of media -->
+  <div class="relative w-full h-full pointer-events-none">
+    <!-- Top Header with Room Info -->
+    <div class="absolute top-0 left-0 right-0 p-4 pointer-events-auto bg-gradient-to-b from-black/50 to-transparent">
+      <div class="flex items-center justify-between">
+        <!-- Left: Room Host Info -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+            <span class="text-white text-sm font-bold">
+              <%= String.first(@room.name) %>
+            </span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold"><%= @room.name %></h3>
+            <div class="flex items-center gap-2">
+              <span class="inline-flex items-center gap-1 text-xs text-gray-300">
+                <span class="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
+                <%= map_size(@presences) %> watching
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Right: Action Buttons -->
+        <div class="flex items-center gap-2">
+          <button
+            phx-click="toggle_chat"
+            class="p-2 bg-black/30 backdrop-blur rounded-full text-white hover:bg-black/50 transition"
+            title={if @show_chat, do: "Hide chat", else: "Show chat"}
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                    d={if @show_chat, do: "M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z", else: "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"} />
+            </svg>
+          </button>
+          <button
+            phx-click="toggle_queue"
+            class="p-2 bg-black/30 backdrop-blur rounded-full text-white hover:bg-black/50 transition relative"
+            title={if @show_queue, do: "Hide queue", else: "Show queue"}
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+            </svg>
+            <%= if length(@queue) > 0 do %>
+              <span class="absolute -top-1 -right-1 bg-purple-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                <%= length(@queue) %>
+              </span>
+            <% end %>
+          </button>
+          <.link 
+            navigate={~p"/rooms"}
+            class="p-2 bg-black/30 backdrop-blur rounded-full text-white hover:bg-black/50 transition"
+            title="Leave room"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </.link>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Side Panel: Queue (Right Side) -->
+    <div 
+      :if={@show_queue}
+      class="absolute top-20 right-4 bottom-32 w-96 pointer-events-auto"
+    >
+      <div class="bg-black/80 backdrop-blur-md rounded-2xl p-4 h-full flex flex-col">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-white font-semibold text-lg">Playlist</h3>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-400">
+              <%= if @current_media, do: "1", else: "0" %> playing • <%= length(@queue) %> queued
+            </span>
+            <%= if @is_host and @current_media do %>
+              <button
+                phx-click="play_next"
+                class="text-xs px-3 py-1 bg-purple-600/50 hover:bg-purple-600 text-white rounded-full transition"
+                title="Skip to next track"
+              >
+                Skip ⏭
+              </button>
+            <% end %>
+          </div>
+        </div>
+        
+        <!-- Add Media Form -->
+        <form phx-submit="add_video" class="mb-4">
+          <div class="relative">
+            <input
+              type="text"
+              name="url"
+              value={@add_video_url}
+              placeholder="Paste YouTube or SoundCloud URL..."
+              class="w-full px-4 py-2.5 bg-white/10 text-white text-sm rounded-lg border border-white/20 focus:border-purple-500 focus:outline-none placeholder-gray-400 pr-10"
+            />
+            <button
+              type="submit"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-purple-400 hover:text-purple-300"
+              title="Add to queue"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+          </div>
+        </form>
+        
+        <!-- Playlist Content -->
+        <div class="flex-1 overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-white/20">
+          <!-- Now Playing Section -->
+          <%= if @current_media do %>
+            <div class="mb-4">
+              <h4 class="text-xs font-semibold text-green-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                Now Playing
+              </h4>
+              <div class="bg-gradient-to-r from-purple-600/20 to-pink-600/20 border border-purple-500/30 rounded-lg p-3">
+                <div class="flex items-center gap-3">
+                  <div class="relative flex-shrink-0">
+                    <% media_type = Map.get(@current_media, :type) || Map.get(@current_media, "type") %>
+                    <%= if media_type == "soundcloud" do %>
+                      <div class="w-16 h-16 bg-gradient-to-br from-orange-500 to-orange-600 rounded flex items-center justify-center">
+                        <svg class="w-8 h-8 text-white" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M11.5 8.5v7h1v-7c-.3-.2-.7-.3-1-.5zm-2 2.5v4h1v-5c-.4.1-.7.3-1 .5zm4 0v5h1v-5c-.3-.2-.7-.4-1-.5zm2 1v4h1v-4c-.3-.1-.7-.2-1-.3zm2 .5v3h1v-3c-.3-.1-.7-.1-1-.2zm2 .5v2.5h1V13c-.3 0-.7 0-1 0zm2 0v2.5h1c0-1-.4-1.8-1-2.5z"/>
+                        </svg>
+                      </div>
+                    <% else %>
+                      <img 
+                        src={Map.get(@current_media, :thumbnail) || Map.get(@current_media, "thumbnail")}
+                        alt={Map.get(@current_media, :title) || Map.get(@current_media, "title")}
+                        class="w-16 h-16 object-cover rounded"
+                      />
+                    <% end %>
+                    <!-- Animated Playing Indicator -->
+                    <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 flex gap-0.5">
+                      <span class="w-1 h-3 bg-green-400 rounded-full animate-bounce" style="animation-delay: 0ms"></span>
+                      <span class="w-1 h-3 bg-green-400 rounded-full animate-bounce" style="animation-delay: 150ms"></span>
+                      <span class="w-1 h-3 bg-green-400 rounded-full animate-bounce" style="animation-delay: 300ms"></span>
+                    </div>
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-white font-medium text-sm truncate">
+                      <%= Map.get(@current_media, :title) || Map.get(@current_media, "title") || "Unknown" %>
+                    </p>
+                    <p class="text-gray-400 text-xs">
+                      Added by <%= Map.get(@current_media, :added_by_username) || Map.get(@current_media, "added_by_username") || "Unknown" %>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <% end %>
+          
+          <!-- Up Next Section -->
+          <%= if length(@queue) > 0 do %>
+            <div>
+              <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                Up Next • <%= length(@queue) %> track<%= if length(@queue) != 1, do: "s" %>
+              </h4>
+              <div class="space-y-2">
+                <%= for {media, index} <- Enum.with_index(@queue) do %>
+                  <% media_type = Map.get(media, :type) || Map.get(media, "type") %>
+                  <% media_title = Map.get(media, :title) || Map.get(media, "title") || "Unknown" %>
+                  <% media_thumbnail = Map.get(media, :thumbnail) || Map.get(media, "thumbnail") %>
+                  <% media_id = Map.get(media, :id) || Map.get(media, "id") %>
+                  <% added_by = Map.get(media, :added_by_username) || Map.get(media, "added_by_username") || "Unknown" %>
+                  
+                  <div class="flex items-center gap-2 p-2 bg-white/5 rounded-lg hover:bg-white/10 transition group">
+                    <!-- Queue Position -->
+                    <div class="flex-shrink-0 w-6 text-center">
+                      <span class="text-gray-500 text-xs font-medium"><%= index + 1 %></span>
+                    </div>
+                    
+                    <!-- Thumbnail -->
+                    <div class="relative flex-shrink-0">
+                      <%= if media_type == "soundcloud" do %>
+                        <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-orange-600 rounded flex items-center justify-center">
+                          <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M11.5 8.5v7h1v-7c-.3-.2-.7-.3-1-.5zm-2 2.5v4h1v-5c-.4.1-.7.3-1 .5zm4 0v5h1v-5c-.3-.2-.7-.4-1-.5zm2 1v4h1v-4c-.3-.1-.7-.2-1-.3zm2 .5v3h1v-3c-.3-.1-.7-.1-1-.2zm2 .5v2.5h1V13c-.3 0-.7 0-1 0zm2 0v2.5h1c0-1-.4-1.8-1-2.5z"/>
+                          </svg>
+                        </div>
+                      <% else %>
+                        <img 
+                          src={media_thumbnail}
+                          alt={media_title}
+                          class="w-12 h-12 object-cover rounded"
+                        />
+                      <% end %>
+                      <!-- Media Type Badge -->
+                      <span class={"absolute -top-1 -right-1 px-1 py-0.5 text-xs font-medium rounded #{if media_type == "soundcloud", do: "bg-orange-500", else: "bg-red-600"} text-white"}>
+                        <%= String.upcase(String.slice(media_type || "??", 0..1)) %>
+                      </span>
+                    </div>
+                    
+                    <!-- Track Info -->
+                    <div class="flex-1 min-w-0">
+                      <p class="text-white text-xs truncate"><%= media_title %></p>
+                      <p class="text-gray-500 text-xs">by <%= added_by %></p>
+                    </div>
+                    
+                    <!-- Actions -->
+                    <%= if @is_host do %>
+                      <button
+                        phx-click="remove_from_queue"
+                        phx-value-id={media_id}
+                        class="opacity-0 group-hover:opacity-100 p-1.5 text-gray-400 hover:text-red-500 transition"
+                        title="Remove from queue"
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+            </div>
+          <% else %>
+            <%= if !@current_media do %>
+              <div class="text-center py-12">
+                <svg class="w-16 h-16 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+                <p class="text-gray-400 text-sm mb-1">Queue is empty</p>
+                <p class="text-gray-500 text-xs">Add tracks to start playing</p>
+              </div>
+            <% else %>
+              <div class="text-center py-8">
+                <p class="text-gray-500 text-sm">No tracks in queue</p>
+                <p class="text-gray-600 text-xs mt-1">Add more tracks to keep the party going!</p>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Bottom Section: Chat History & Input -->
+    <div class="absolute bottom-0 left-0 right-0 pointer-events-auto">
+      <!-- Scrollable Chat History -->
+      <div 
+        :if={@show_chat}
+        class="relative h-48 pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20"
+        id="chat-history"
+        phx-hook="ChatScroll"
+        style="margin-bottom: 45px; padding-left: 1rem;"
+      >
+        <div class="space-y-1" id="messages-container" style={if @show_queue, do: "margin-right: 416px;", else: "margin-right: 0;"}>
+          <%= for message <- Enum.reverse(@messages) do %>
+            <div class="flex items-start gap-2 text-sm max-w-2xl">
+              <span class="font-bold shrink-0" style={"color: #{message.color}; text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"} >
+                <%= message.username %>:
+              </span>
+              <span class="text-white break-words font-semibold" style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;">
+                <%= linkify_text(message.text) %>
+              </span>
+            </div>
+          <% end %>
+        </div>
+      </div>
+      
+      <!-- Chat Input & Controls -->
+      <div class="bg-gradient-to-t from-black/80 to-black/40 backdrop-blur-md p-4">
+        <div class="flex items-center gap-3 max-w-4xl mx-auto">
+          <!-- Chat Input -->
+          <form phx-submit="send_message" class="flex-1 flex gap-2">
+            <input 
+              type="text"
+              name="message"
+              placeholder="Add a comment..."
+              class="flex-1 px-4 py-2.5 bg-black/60 text-white rounded-full border border-black/80 backdrop-blur focus:border-purple-500 focus:outline-none placeholder-gray-400 text-sm font-bold"
+              style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"
+              autocomplete="off"
+              maxlength="100"
+            />
+            <button 
+              type="submit"
+              class="p-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white rounded-full transition"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+              </svg>
+            </button>
+          </form>
+          
+          <!-- Reaction Buttons -->
+          <div class="flex items-center gap-1">
+            <button 
+              phx-click="send_reaction"
+              phx-value-emoji="❤️"
+              class="p-2 hover:scale-110 transition-transform"
+            >
+              <span class="text-2xl">❤️</span>
+            </button>
+            <button 
+              phx-click="send_reaction"
+              phx-value-emoji="🔥"
+              class="p-2 hover:scale-110 transition-transform"
+            >
+              <span class="text-2xl">🔥</span>
+            </button>
+            <button 
+              phx-click="send_reaction"
+              phx-value-emoji="😂"
+              class="p-2 hover:scale-110 transition-transform"
+            >
+              <span class="text-2xl">😂</span>
+            </button>
+            <button 
+              phx-click="send_reaction"
+              phx-value-emoji="👏"
+              class="p-2 hover:scale-110 transition-transform"
+            >
+              <span class="text-2xl">👏</span>
+            </button>
+          </div>
+        </div>
+        
+        <!-- User Info -->
+        <div class="text-center mt-2">
+          <span class="text-xs text-gray-500">
+            Chatting as 
+            <span style={"color: #{@user.color}"}>
+              <%= @user.username %>
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Floating Reactions Animation -->
+    <div id="reactions-container" class="absolute bottom-20 right-4 pointer-events-none">
+      <!-- Reactions will be dynamically added here -->
+    </div>
+  </div>
+</div>

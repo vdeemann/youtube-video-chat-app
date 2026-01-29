@@ -1,0 +1,46 @@
+# Development Dockerfile - Optimized for hot reloading
+FROM elixir:1.17.3-otp-26
+
+# Install Node.js, npm, and PostgreSQL client
+RUN apt-get update && apt-get install -y \
+    nodejs \
+    npm \
+    postgresql-client \
+    inotify-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install Hex and Rebar
+RUN mix local.hex --force && \
+    mix local.rebar --force
+
+# Set environment
+ENV MIX_ENV=dev
+
+# Copy mix files
+COPY mix.exs mix.lock ./
+
+# Install dependencies
+RUN mix deps.get
+RUN mix deps.compile
+
+# Copy assets package files
+COPY assets/package.json assets/package-lock.json ./assets/
+RUN cd assets && npm install && cd ..
+
+# Copy all application files
+COPY . .
+
+# Compile assets
+RUN mix assets.build
+
+# Compile the application
+RUN mix compile
+
+# Expose port
+EXPOSE 4000
+
+# Start Phoenix server
+CMD ["mix", "phx.server"]

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat History Test - YouTube Watch Party Style</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* Video placeholder */
+        .video-area {
+            flex: 1;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            opacity: 0.8;
+        }
+        
+        /* Bottom chat section */
+        .chat-section {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(to top, rgba(0,0,0,0.9), rgba(0,0,0,0.6));
+            backdrop-filter: blur(10px);
+        }
+        
+        /* Chat history */
+        .chat-history {
+            height: 200px;
+            overflow-y: auto;
+            padding: 10px 20px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.2) transparent;
+        }
+        
+        .chat-history::-webkit-scrollbar {
+            width: 4px;
+        }
+        
+        .chat-history::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        .chat-history::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+        }
+        
+        .message {
+            margin-bottom: 8px;
+            font-size: 14px;
+            display: flex;
+            gap: 8px;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .username {
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+        
+        .message-text {
+            color: #fff;
+            word-break: break-word;
+        }
+        
+        /* Chat input */
+        .chat-input-container {
+            padding: 15px 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .input-wrapper {
+            flex: 1;
+            display: flex;
+            gap: 10px;
+        }
+        
+        input {
+            flex: 1;
+            padding: 10px 20px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 25px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+        }
+        
+        input::placeholder {
+            color: rgba(255,255,255,0.5);
+        }
+        
+        input:focus {
+            border-color: #667eea;
+            background: rgba(255,255,255,0.15);
+        }
+        
+        button {
+            padding: 10px 20px;
+            background: linear-gradient(to right, #667eea, #764ba2);
+            border: none;
+            border-radius: 25px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        button:hover {
+            transform: scale(1.05);
+        }
+        
+        .emoji-buttons {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .emoji-btn {
+            background: transparent;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            padding: 5px;
+        }
+        
+        .emoji-btn:hover {
+            transform: scale(1.2);
+        }
+        
+        /* Reaction animation */
+        @keyframes bubble-up {
+            0% {
+                transform: translateY(0) scale(0);
+                opacity: 1;
+            }
+            15% {
+                transform: translateY(-20px) scale(1.2);
+            }
+            100% {
+                transform: translateY(-300px) scale(0.8);
+                opacity: 0;
+            }
+        }
+        
+        .reaction {
+            position: fixed;
+            bottom: 100px;
+            right: 20px;
+            font-size: 32px;
+            animation: bubble-up 2s ease-out forwards;
+            pointer-events: none;
+        }
+        
+        .info {
+            text-align: center;
+            padding: 5px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="video-area">
+        Video Player Area
+    </div>
+    
+    <div class="chat-section">
+        <div class="chat-history" id="chatHistory">
+            <!-- Messages will appear here -->
+        </div>
+        
+        <div class="chat-input-container">
+            <div class="input-wrapper">
+                <input 
+                    type="text" 
+                    id="messageInput" 
+                    placeholder="Add a comment..."
+                    maxlength="100"
+                    onkeypress="if(event.key === 'Enter') sendMessage()"
+                >
+                <button onclick="sendMessage()">Send</button>
+            </div>
+            
+            <div class="emoji-buttons">
+                <button class="emoji-btn" onclick="sendReaction('❤️')">❤️</button>
+                <button class="emoji-btn" onclick="sendReaction('🔥')">🔥</button>
+                <button class="emoji-btn" onclick="sendReaction('😂')">😂</button>
+                <button class="emoji-btn" onclick="sendReaction('👏')">👏</button>
+            </div>
+        </div>
+        
+        <div class="info">
+            Chatting as <span id="username" style="color: #667eea">Guest</span>
+        </div>
+    </div>
+    
+    <script>
+        const usernames = ['Guest8376', 'Guest9387', 'Guest2451', 'Guest7823', 'Guest5612'];
+        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FED766', '#F38181', '#AA96DA'];
+        const currentUser = usernames[Math.floor(Math.random() * usernames.length)];
+        const currentColor = colors[Math.floor(Math.random() * colors.length)];
+        
+        document.getElementById('username').textContent = currentUser;
+        document.getElementById('username').style.color = currentColor;
+        
+        function addMessage(username, text, color) {
+            const chatHistory = document.getElementById('chatHistory');
+            const message = document.createElement('div');
+            message.className = 'message';
+            message.innerHTML = `
+                <span class="username" style="color: ${color}">${username}:</span>
+                <span class="message-text">${text}</span>
+            `;
+            chatHistory.appendChild(message);
+            
+            // Auto-scroll to bottom
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+            
+            // Keep only last 50 messages
+            while (chatHistory.children.length > 50) {
+                chatHistory.removeChild(chatHistory.firstChild);
+            }
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const text = input.value.trim();
+            
+            if (text) {
+                addMessage(currentUser, text, currentColor);
+                input.value = '';
+                
+                // Simulate other users after a delay
+                if (Math.random() > 0.5) {
+                    setTimeout(() => {
+                        const otherUser = usernames[Math.floor(Math.random() * usernames.length)];
+                        const otherColor = colors[Math.floor(Math.random() * colors.length)];
+                        const responses = ['Nice!', 'Agreed!', 'Love it', 'Same here', '👍', 'Exactly!'];
+                        const response = responses[Math.floor(Math.random() * responses.length)];
+                        addMessage(otherUser, response, otherColor);
+                    }, 1000 + Math.random() * 2000);
+                }
+            }
+        }
+        
+        function sendReaction(emoji) {
+            // Add to chat
+            addMessage(currentUser, emoji, currentColor);
+            
+            // Show floating reaction
+            const reaction = document.createElement('div');
+            reaction.className = 'reaction';
+            reaction.textContent = emoji;
+            reaction.style.right = (20 + Math.random() * 60) + 'px';
+            document.body.appendChild(reaction);
+            
+            setTimeout(() => {
+                reaction.remove();
+            }, 2000);
+        }
+        
+        // Add some initial messages
+        setTimeout(() => {
+            addMessage('Guest8376', 'Hey everyone!', '#FF6B6B');
+        }, 500);
+        
+        setTimeout(() => {
+            addMessage('Guest9387', 'hi', '#4ECDC4');
+        }, 1000);
+        
+        setTimeout(() => {
+            addMessage('Guest2451', 'First time here', '#45B7D1');
+        }, 1500);
+        
+        setTimeout(() => {
+            addMessage('Guest8376', 'Welcome!', '#FF6B6B');
+        }, 2000);
+    </script>
+</body>
+</html>

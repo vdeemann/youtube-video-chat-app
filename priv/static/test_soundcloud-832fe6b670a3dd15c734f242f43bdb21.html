@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SoundCloud Embed Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 900px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .test-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+        .test-section h2 {
+            color: #ff5500;
+            margin-bottom: 15px;
+        }
+        .iframe-container {
+            width: 100%;
+            height: 166px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .iframe-visual {
+            width: 100%;
+            height: 400px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        button {
+            background: #ff5500;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #ff6600;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 SoundCloud Embed Test</h1>
+        
+        <div class="test-section">
+            <h2>Test 1: Standard Visual Player</h2>
+            <p>Visual mode with controls:</p>
+            <div class="iframe-visual">
+                <iframe
+                    id="sc-test-1"
+                    width="100%"
+                    height="100%"
+                    scrolling="no"
+                    frameborder="no"
+                    allow="autoplay"
+                    src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/rickastley/never-gonna-give-you-up-4&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false&visual=true">
+                </iframe>
+            </div>
+            <div class="status success">✅ This should show a visual SoundCloud player</div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 2: Classic Player</h2>
+            <p>Classic waveform mode:</p>
+            <div class="iframe-container">
+                <iframe
+                    id="sc-test-2"
+                    width="100%"
+                    height="100%"
+                    scrolling="no"
+                    frameborder="no"
+                    allow="autoplay"
+                    src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/rickastley/never-gonna-give-you-up-4&color=%23ff5500&auto_play=false&hide_related=true&show_comments=true&show_user=true&show_reposts=false&show_teaser=true">
+                </iframe>
+            </div>
+            <div class="status success">✅ This should show a classic SoundCloud player</div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 3: Dynamic URL Test</h2>
+            <p>Enter a SoundCloud URL to test embedding:</p>
+            <input 
+                type="text" 
+                id="test-url" 
+                placeholder="https://soundcloud.com/artist/track-name"
+                value="https://soundcloud.com/odesza/say-my-name-feat-zyra"
+            />
+            <button onclick="testEmbed()">Test Embed</button>
+            <div id="dynamic-container" class="iframe-visual" style="margin-top: 20px;">
+                <!-- Dynamic iframe will be inserted here -->
+            </div>
+            <div id="test-status" class="status" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 4: Widget API Test</h2>
+            <p>Testing SoundCloud Widget API controls:</p>
+            <div class="iframe-container">
+                <iframe
+                    id="sc-api-test"
+                    width="100%"
+                    height="100%"
+                    scrolling="no"
+                    frameborder="no"
+                    allow="autoplay"
+                    src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/forss/flickermood&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false">
+                </iframe>
+            </div>
+            <button onclick="playTrack()">Play</button>
+            <button onclick="pauseTrack()">Pause</button>
+            <button onclick="getTrackInfo()">Get Info</button>
+            <div id="api-status" class="status" style="margin-top: 10px; display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Generated Embed URL:</h2>
+            <pre id="embed-url-display">Click "Test Embed" to see the generated URL</pre>
+        </div>
+    </div>
+
+    <script src="https://w.soundcloud.com/player/api.js"></script>
+    <script>
+        let widget = null;
+
+        function testEmbed() {
+            const url = document.getElementById('test-url').value;
+            const status = document.getElementById('test-status');
+            const container = document.getElementById('dynamic-container');
+            const urlDisplay = document.getElementById('embed-url-display');
+            
+            if (!url || !url.includes('soundcloud.com')) {
+                status.className = 'status error';
+                status.textContent = '❌ Please enter a valid SoundCloud URL';
+                status.style.display = 'block';
+                return;
+            }
+            
+            // Generate embed URL
+            const embedUrl = generateEmbedUrl(url);
+            urlDisplay.textContent = embedUrl;
+            
+            // Create new iframe
+            container.innerHTML = `
+                <iframe
+                    width="100%"
+                    height="100%"
+                    scrolling="no"
+                    frameborder="no"
+                    allow="autoplay"
+                    src="${embedUrl}">
+                </iframe>
+            `;
+            
+            status.className = 'status success';
+            status.textContent = '✅ Embed created successfully!';
+            status.style.display = 'block';
+        }
+        
+        function generateEmbedUrl(trackUrl) {
+            const params = new URLSearchParams({
+                url: trackUrl,
+                color: '#ff5500',
+                auto_play: 'false',
+                hide_related: 'true',
+                show_comments: 'false',
+                show_user: 'true',
+                show_reposts: 'false',
+                show_teaser: 'false',
+                visual: 'true'
+            });
+            return `https://w.soundcloud.com/player/?${params.toString()}`;
+        }
+        
+        // Widget API functions
+        function initWidget() {
+            if (window.SC && window.SC.Widget) {
+                widget = SC.Widget(document.getElementById('sc-api-test'));
+                widget.bind(SC.Widget.Events.READY, function() {
+                    console.log('Widget is ready');
+                    showApiStatus('Widget API initialized', 'success');
+                });
+                widget.bind(SC.Widget.Events.FINISH, function() {
+                    showApiStatus('Track finished playing', 'success');
+                });
+            } else {
+                showApiStatus('SoundCloud API not loaded', 'error');
+            }
+        }
+        
+        function playTrack() {
+            if (widget) {
+                widget.play();
+                showApiStatus('Playing track...', 'success');
+            } else {
+                showApiStatus('Widget not initialized', 'error');
+            }
+        }
+        
+        function pauseTrack() {
+            if (widget) {
+                widget.pause();
+                showApiStatus('Track paused', 'success');
+            } else {
+                showApiStatus('Widget not initialized', 'error');
+            }
+        }
+        
+        function getTrackInfo() {
+            if (widget) {
+                widget.getCurrentSound(function(sound) {
+                    showApiStatus(`Track: ${sound.title} by ${sound.user.username}`, 'success');
+                });
+            } else {
+                showApiStatus('Widget not initialized', 'error');
+            }
+        }
+        
+        function showApiStatus(message, type) {
+            const status = document.getElementById('api-status');
+            status.className = `status ${type}`;
+            status.textContent = type === 'success' ? `✅ ${message}` : `❌ ${message}`;
+            status.style.display = 'block';
+        }
+        
+        // Initialize widget when page loads
+        window.addEventListener('load', function() {
+            setTimeout(initWidget, 500);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+#!/bin/bash
+set -e  # Exit on error
+
+# Test SoundCloud integration
+echo "Testing SoundCloud integration..."
+echo ""
+echo "Here are some test SoundCloud URLs you can try:"
+echo ""
+echo "1. Example track (may not work if removed):"
+echo "   https://soundcloud.com/platform/sama"
+echo ""
+echo "2. Format for SoundCloud URLs:"
+echo "   https://soundcloud.com/[artist]/[track-name]"
+echo ""
+echo "To test:"
+echo "1. Start your Phoenix server: mix phx.server"
+echo "2. Create or join a room"
+echo "3. Click 'Toggle Queue' button"
+echo "4. Paste one of the URLs above"
+echo "5. The track should appear in the queue with an orange SC badge"
+echo ""
+echo "Debugging tips:"
+echo "- Check browser console for errors (F12)"
+echo "- Ensure the SoundCloud URL is public and embeddable"
+echo "- Try with a YouTube URL first to confirm the system works"
+echo ""
+echo "Example YouTube URL for testing:"
+echo "   https://www.youtube.com/watch?v=dQw4w9WgXcQ"
