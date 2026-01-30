@@ -10,8 +10,9 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   def mount(%{"slug" => slug}, _session, socket) do
     room = Rooms.get_room_by_slug!(slug)
     
-    # Create or get user
-    user = Accounts.create_guest_user()
+    # Get user - either registered user from session or create guest
+    user = get_or_create_user(socket)
+    is_guest = Map.get(user, :is_guest, false)
     
     # Ensure room server is running BEFORE trying to get state
     Rooms.ensure_room_server(room.id)
@@ -35,7 +36,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       {:ok, _} = Presence.track(self(), "room:#{room.id}", user.id, %{
         username: user.username,
         color: user.color,
-        joined_at: System.system_time(:second)
+        joined_at: System.system_time(:second),
+        is_guest: is_guest
       })
       
       Logger.info("   Tracked user, now presence: #{map_size(Presence.list("room:#{room.id}"))}")
@@ -75,10 +77,12 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     Logger.info("   IDs match: #{user.id == room.host_id}")
     Logger.info("   Presence before join: #{presence_before_join}")
     Logger.info("   → IS HOST: #{is_host}")
+    Logger.info("   → IS GUEST: #{is_guest}")
     
     socket = socket
     |> assign(:room, room)
     |> assign(:user, user)
+    |> assign(:is_guest, is_guest)
     |> assign(:messages, [])
     |> assign(:current_media, room_state.current_media)
     |> assign(:video_state, room_state.video_state)
@@ -90,6 +94,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:show_queue, false)
     |> assign(:add_video_url, "")
     |> assign(:last_played_track_id, room_state.current_media && (room_state.current_media[:id] || room_state.current_media.id))
+    |> assign(:show_login_prompt, false)
     |> push_event("set_host_status", %{is_host: is_host})
     
     # Always send create_player event if there's media
@@ -118,6 +123,19 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     {:ok, socket |> handle_joins(Presence.list("room:#{room.id}"))}
   end
 
+  # Get user from session or create a guest
+  defp get_or_create_user(socket) do
+    case socket.assigns[:current_user] do
+      nil ->
+        # No logged-in user, create a guest
+        Accounts.create_guest_user()
+      
+      user ->
+        # Logged-in user, convert to room format
+        Accounts.user_to_room_user(user)
+    end
+  end
+
   @impl true
   def handle_event("send_message", %{"message" => ""}, socket) do
     # Ignore empty messages
@@ -125,38 +143,52 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
   
   def handle_event("send_message", %{"message" => msg}, socket) do
-    message = %{
-      id: Ecto.UUID.generate(),
-      text: msg,
-      username: socket.assigns.user.username,
-      color: socket.assigns.user.color,
-      timestamp: DateTime.utc_now()
-    }
-    
-    # Broadcast to all viewers
-    PubSub.broadcast(
-      YoutubeVideoChatApp.PubSub, 
-      "room:#{socket.assigns.room.id}", 
-      {:new_message, message}
-    )
-    
-    {:noreply, socket}
+    # Only registered users can chat
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
+    else
+      message = %{
+        id: Ecto.UUID.generate(),
+        text: msg,
+        username: socket.assigns.user.username,
+        color: socket.assigns.user.color,
+        timestamp: DateTime.utc_now()
+      }
+      
+      # Broadcast to all viewers
+      PubSub.broadcast(
+        YoutubeVideoChatApp.PubSub, 
+        "room:#{socket.assigns.room.id}", 
+        {:new_message, message}
+      )
+      
+      {:noreply, socket}
+    end
   end
   
   @impl true
   def handle_event("send_reaction", %{"emoji" => emoji}, socket) do
-    # Broadcast reaction event
-    PubSub.broadcast(
-      YoutubeVideoChatApp.PubSub,
-      "room:#{socket.assigns.room.id}",
-      {:reaction, %{
-        id: Ecto.UUID.generate(),
-        emoji: emoji,
-        username: socket.assigns.user.username
-      }}
-    )
-    
-    {:noreply, socket}
+    # Only registered users can send reactions
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
+    else
+      PubSub.broadcast(
+        YoutubeVideoChatApp.PubSub,
+        "room:#{socket.assigns.room.id}",
+        {:reaction, %{
+          id: Ecto.UUID.generate(),
+          emoji: emoji,
+          username: socket.assigns.user.username
+        }}
+      )
+      
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("dismiss_login_prompt", _params, socket) do
+    {:noreply, assign(socket, :show_login_prompt, false)}
   end
 
   @impl true
@@ -177,30 +209,35 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("add_video", %{"url" => url}, socket) do
-    Logger.info("=== ADD VIDEO EVENT ===")
-    Logger.info("Raw URL received: #{url}")
-    
-    # Clean the URL
-    cleaned_url = String.trim(url)
-    Logger.info("Cleaned URL: #{cleaned_url}")
-    
-    # Parse the URL
-    media_data = parse_media_url(cleaned_url)
-    Logger.info("Parse result: #{inspect(media_data)}")
-    
-    if media_data do
-      Logger.info("Media parsed successfully, adding to queue...")
-      
-      {:ok, _media} = RoomServer.add_to_queue(
-        socket.assigns.room.id,
-        media_data,
-        socket.assigns.user
-      )
-      
-      {:noreply, assign(socket, :add_video_url, "")}
+    # Only registered users can add videos
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
     else
-      Logger.error("Failed to parse URL as media")
-      {:noreply, put_flash(socket, :error, "Invalid YouTube or SoundCloud URL")}
+      Logger.info("=== ADD VIDEO EVENT ===")
+      Logger.info("Raw URL received: #{url}")
+      
+      # Clean the URL
+      cleaned_url = String.trim(url)
+      Logger.info("Cleaned URL: #{cleaned_url}")
+      
+      # Parse the URL
+      media_data = parse_media_url(cleaned_url)
+      Logger.info("Parse result: #{inspect(media_data)}")
+      
+      if media_data do
+        Logger.info("Media parsed successfully, adding to queue...")
+        
+        {:ok, _media} = RoomServer.add_to_queue(
+          socket.assigns.room.id,
+          media_data,
+          socket.assigns.user
+        )
+        
+        {:noreply, assign(socket, :add_video_url, "")}
+      else
+        Logger.error("Failed to parse URL as media")
+        {:noreply, put_flash(socket, :error, "Invalid YouTube or SoundCloud URL")}
+      end
     end
   end
 
@@ -263,9 +300,6 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     if socket.assigns.current_media && socket.assigns.current_media.media_id == media_id do
       # Update current_media with real duration
       updated_media = Map.put(socket.assigns.current_media, :duration, duration)
-      
-      # You could also update it in the RoomServer here
-      # RoomServer.update_current_media_duration(socket.assigns.room.id, duration)
       
       {:noreply, assign(socket, :current_media, updated_media)}
     else
@@ -535,7 +569,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       # Get the path without query params
       path = case uri.path do
         nil -> 
-          Logger.warn("No path found in URL")
+          Logger.warning("No path found in URL")
           ""
         p -> p
       end
@@ -580,7 +614,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
           {format_name(single_part), "Track"}
         
         _ ->
-          Logger.warn("Could not parse artist/track from path")
+          Logger.warning("Could not parse artist/track from path")
           {"SoundCloud", "Audio"}
       end
       
@@ -609,17 +643,17 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         "embed_url" => embed_url,
         "original_url" => clean_url
       }
+    rescue
+      e ->
+        Logger.error("Exception parsing SoundCloud URL: #{inspect(e)}")
+        Logger.error("Stack: #{inspect(__STACKTRACE__)}")
+        nil
     catch
       :not_soundcloud -> 
         Logger.error("URL is not a SoundCloud URL")
         nil
       e ->
         Logger.error("Error parsing SoundCloud URL: #{inspect(e)}")
-        nil
-    rescue
-      e ->
-        Logger.error("Exception parsing SoundCloud URL: #{inspect(e)}")
-        Logger.error("Stack: #{inspect(__STACKTRACE__)}")
         nil
     end
   end

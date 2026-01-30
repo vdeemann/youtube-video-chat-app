@@ -425,12 +425,14 @@ window.addEventListener("phx:set_host_status", (e) => {
 window.addEventListener("phx:show_reaction", (e) => {
   const container = document.getElementById("reactions-container");
   if (!container) return;
+  
   const reaction = document.createElement("div");
-  reaction.className = "absolute bottom-0 animate-bubble-up text-3xl";
-  reaction.style.left = `${Math.random() * 60}px`;
+  reaction.className = "absolute animate-bounce-up text-5xl";
+  reaction.style.left = `${Math.random() * 100 - 50}px`; // Random position around center
+  reaction.style.textShadow = "0 0 10px rgba(255,255,255,0.5)";
   reaction.textContent = e.detail.emoji;
   container.appendChild(reaction);
-  setTimeout(() => reaction.remove(), 2000);
+  setTimeout(() => reaction.remove(), 2500);
 });
 
 // ===========================================

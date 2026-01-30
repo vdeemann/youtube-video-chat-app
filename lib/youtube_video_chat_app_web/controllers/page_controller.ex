@@ -2,7 +2,6 @@ defmodule YoutubeVideoChatAppWeb.PageController do
   use YoutubeVideoChatAppWeb, :controller
 
   def home(conn, _params) do
-    # Redirect to the rooms index
-    redirect(conn, to: ~p"/rooms")
+    render(conn, :home, current_user: conn.assigns[:current_user])
   end
 end
