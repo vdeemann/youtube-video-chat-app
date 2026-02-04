@@ -18,6 +18,28 @@ defmodule YoutubeVideoChatAppWeb.UserSessionController do
     end
   end
 
+  # Token-based login from modal (LiveView generates token, we set the session)
+  def token_login(conn, %{"token" => token_b64}) do
+    with {:ok, token} <- Base.url_decode64(token_b64),
+         user when not is_nil(user) <- Accounts.get_user_by_session_token(token) do
+      conn
+      |> put_flash(:info, "Welcome back!")
+      |> put_session(:user_token, token)
+      |> configure_session(renew: true)
+      |> redirect(to: ~p"/rooms")
+    else
+      _ ->
+        conn
+        |> put_flash(:error, "Invalid or expired login link")
+        |> redirect(to: ~p"/rooms")
+    end
+  end
+
+  def token_login(conn, _params) do
+    conn
+    |> redirect(to: ~p"/rooms")
+  end
+
   def delete(conn, _params) do
     conn
     |> put_flash(:info, "Logged out successfully.")

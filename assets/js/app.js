@@ -22,6 +22,58 @@ window.playerState = {
 };
 
 // ===========================================
+// BANDCAMP TIMER START
+// Called when host clicks "Start Timer" button after they've started playback
+// ===========================================
+window.startBandcampTimer = function() {
+  console.log("[Bandcamp] User clicked start timer button");
+  
+  // Update the button to show it was clicked
+  const btn = document.getElementById('bandcamp-start-btn');
+  if (btn) {
+    btn.innerHTML = '✅ Timer Running!';
+    btn.disabled = true;
+    btn.classList.remove('from-green-500', 'to-teal-500', 'hover:from-green-600', 'hover:to-teal-600');
+    btn.classList.add('from-gray-500', 'to-gray-600', 'cursor-not-allowed');
+  }
+  
+  // Start the server-side timer
+  pushBandcampStarted();
+};
+
+// Alias for backward compatibility
+window.startBandcampPlayback = window.startBandcampTimer;
+
+function pushBandcampStarted() {
+  console.log("[Bandcamp] Pushing bandcamp_started event to server");
+  
+  // Method 1: Try using the hook's pushEvent
+  const hookEl = document.getElementById('room-container');
+  if (hookEl && hookEl._phxHookPushEvent) {
+    console.log("[Bandcamp] Using hook pushEvent method");
+    hookEl._phxHookPushEvent("bandcamp_started", {});
+    return;
+  }
+  
+  // Method 2: Find the LiveView and push directly
+  if (window.liveSocket) {
+    const view = document.querySelector('[data-phx-main]');
+    if (view) {
+      const viewInstance = window.liveSocket.getViewByEl(view);
+      if (viewInstance) {
+        console.log("[Bandcamp] Using LiveView pushEvent method");
+        viewInstance.pushEvent("bandcamp_started", {}, () => {
+          console.log("[Bandcamp] bandcamp_started event pushed successfully");
+        });
+        return;
+      }
+    }
+  }
+  
+  console.error("[Bandcamp] Could not push bandcamp_started event");
+}
+
+// ===========================================
 // LOAD YOUTUBE IFRAME API
 // ===========================================
 function loadYouTubeAPI() {
@@ -155,6 +207,64 @@ function createPlayer(media, serverStartedAt, isHost) {
     
     // Setup SoundCloud player after it loads
     setTimeout(() => initSoundCloud(elapsed, isHost), 1000);
+    
+  } else if (media.type === "bandcamp") {
+    // Bandcamp embed player
+    // NOTE: Bandcamp doesn't support autoplay or programmatic control
+    // User must manually click play in the embed
+    const uniqueId = `${now}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    playerHtml = `
+      <div class="relative w-full h-full bg-gradient-to-br from-cyan-900 via-teal-900 to-blue-900" id="player-host">
+        <div class="absolute inset-0 flex items-center justify-center">
+          <div class="w-full max-w-4xl px-8">
+            <div class="text-center mb-6">
+              <h2 class="text-white text-2xl font-bold mb-2">${media.title || 'Bandcamp Track'}</h2>
+              <p class="text-white/70 text-sm">Bandcamp</p>
+            </div>
+            
+            <!-- Bandcamp iframe - always visible -->
+            <div id="bandcamp-container" class="relative" style="height: 120px;">
+              <iframe
+                id="bandcamp-player"
+                name="bc-player-${uniqueId}"
+                src="${media.embed_url}"
+                style="border: 0; width: 100%; height: 100%;"
+                seamless
+                allow="autoplay"
+              ></iframe>
+            </div>
+            
+            <!-- Instructions -->
+            <div class="text-center mt-6">
+              <p class="text-yellow-300 text-lg font-semibold mb-4 animate-pulse">
+                👆 Click the play button above to start
+              </p>
+              
+              ${isHost ? `
+                <p class="text-white/60 text-sm mb-3">Then click below to start the auto-advance timer:</p>
+                <button 
+                  id="bandcamp-start-btn"
+                  onclick="window.startBandcampTimer()"
+                  class="px-6 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-bold rounded-full transition transform hover:scale-105 shadow-xl"
+                >
+                  ⏱️ Start Timer (${Math.floor(media.duration / 60)}:${String(media.duration % 60).padStart(2, '0')})
+                </button>
+                <p class="text-white/40 text-xs mt-2">Timer auto-advances to next track when complete</p>
+              ` : `
+                <p class="text-white/50 text-sm">Host will start the timer after playing</p>
+              `}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    container.innerHTML = playerHtml;
+    
+    console.log("[Bandcamp] Player created - user must manually click play");
+    window.playerState.playerReady = true;
+    window.playerState.bandcampDuration = media.duration || 180;
   }
 }
 

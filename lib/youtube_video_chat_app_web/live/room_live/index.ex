@@ -14,6 +14,9 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
      socket
      |> assign(:rooms, rooms)
      |> assign(:is_guest, is_guest)
+     |> assign(:show_auth_modal, false)
+     |> assign(:auth_mode, :login)  # :login or :register
+     |> assign(:auth_error, nil)
      |> assign(:page_title, "Browse Rooms")}
   end
 
@@ -21,7 +24,11 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
   def handle_event("create_room", _params, socket) do
     # Only registered users can create rooms
     if socket.assigns.is_guest do
-      {:noreply, put_flash(socket, :error, "Please log in or create an account to create a room.")}
+      {:noreply, 
+       socket
+       |> assign(:show_auth_modal, true)
+       |> assign(:auth_mode, :login)
+       |> assign(:auth_error, nil)}
     else
       user = Accounts.user_to_room_user(socket.assigns.current_user)
       
@@ -43,6 +50,88 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
   end
 
   @impl true
+  def handle_event("show_login", _params, socket) do
+    {:noreply, 
+     socket
+     |> assign(:show_auth_modal, true)
+     |> assign(:auth_mode, :login)
+     |> assign(:auth_error, nil)}
+  end
+
+  @impl true
+  def handle_event("show_register", _params, socket) do
+    {:noreply, 
+     socket
+     |> assign(:show_auth_modal, true)
+     |> assign(:auth_mode, :register)
+     |> assign(:auth_error, nil)}
+  end
+
+  @impl true
+  def handle_event("close_auth_modal", _params, socket) do
+    {:noreply, assign(socket, :show_auth_modal, false)}
+  end
+
+  @impl true
+  def handle_event("switch_to_login", _params, socket) do
+    {:noreply, 
+     socket
+     |> assign(:auth_mode, :login)
+     |> assign(:auth_error, nil)}
+  end
+
+  @impl true
+  def handle_event("switch_to_register", _params, socket) do
+    {:noreply, 
+     socket
+     |> assign(:auth_mode, :register)
+     |> assign(:auth_error, nil)}
+  end
+
+  @impl true
+  def handle_event("login", %{"email" => email, "password" => password}, socket) do
+    case Accounts.get_user_by_email_and_password(email, password) do
+      nil ->
+        {:noreply, assign(socket, :auth_error, "Invalid email or password")}
+      
+      user ->
+        # Create token and redirect to auth callback which sets the session
+        token = Accounts.generate_user_session_token(user)
+        {:noreply,
+         socket
+         |> assign(:show_auth_modal, false)
+         |> redirect(to: ~p"/auth/callback?token=#{Base.url_encode64(token)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("register", %{"username" => username, "email" => email, "password" => password}, socket) do
+    case Accounts.register_user(%{username: username, email: email, password: password}) do
+      {:ok, user} ->
+        # Create token and redirect to auth callback which sets the session
+        token = Accounts.generate_user_session_token(user)
+        {:noreply,
+         socket
+         |> assign(:show_auth_modal, false)
+         |> redirect(to: ~p"/auth/callback?token=#{Base.url_encode64(token)}")}
+      
+      {:error, changeset} ->
+        error_msg = format_changeset_errors(changeset)
+        {:noreply, assign(socket, :auth_error, error_msg)}
+    end
+  end
+
+  defp format_changeset_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
+    |> Enum.map(fn {field, errors} -> "#{field}: #{Enum.join(errors, ", ")}" end)
+    |> Enum.join("; ")
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <div class="min-h-screen bg-gradient-to-br from-purple-900 via-black to-purple-900">
@@ -51,18 +140,18 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
         <div class="flex justify-end mb-4">
           <%= if @is_guest do %>
             <div class="flex gap-2">
-              <.link 
-                navigate={~p"/login"}
+              <button
+                phx-click="show_login"
                 class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition"
               >
                 Log In
-              </.link>
-              <.link 
-                navigate={~p"/register"}
+              </button>
+              <button
+                phx-click="show_register"
                 class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition border border-white/20"
               >
                 Sign Up
-              </.link>
+              </button>
             </div>
           <% else %>
             <div class="flex items-center gap-4">
@@ -99,18 +188,18 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
                 Log in or create an account to start your own watch party!
               </p>
               <div class="flex flex-col sm:flex-row gap-3 justify-center">
-                <.link 
-                  navigate={~p"/login"}
+                <button
+                  phx-click="show_login"
                   class="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold rounded-full transition transform hover:scale-105"
                 >
                   Log In
-                </.link>
-                <.link 
-                  navigate={~p"/register"}
+                </button>
+                <button
+                  phx-click="show_register"
                   class="px-6 py-3 bg-white/10 hover:bg-white/20 text-white font-bold rounded-full transition border border-white/20"
                 >
                   Sign Up
-                </.link>
+                </button>
               </div>
             </div>
           <% else %>
@@ -203,6 +292,134 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
           </div>
         </div>
       </div>
+      
+      <!-- Auth Modal -->
+      <%= if @show_auth_modal do %>
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <!-- Backdrop (click to close) -->
+          <div class="absolute inset-0" phx-click="close_auth_modal"></div>
+          
+          <!-- Modal Content (doesn't close on click) -->
+          <div class="relative bg-gray-900 border border-purple-500/30 rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl z-10">
+            <!-- Close button -->
+            <button
+              phx-click="close_auth_modal"
+              class="absolute top-4 right-4 text-gray-500 hover:text-white transition"
+            >
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            
+            <!-- Modal Content -->
+            <div class="text-center mb-6">
+              <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                <span class="text-2xl"><%= if @auth_mode == :login, do: "👋", else: "🎉" %></span>
+              </div>
+              <h3 class="text-2xl font-bold text-white">
+                <%= if @auth_mode == :login, do: "Welcome Back!", else: "Join the Party!" %>
+              </h3>
+              <p class="text-gray-400 mt-2">
+                <%= if @auth_mode == :login, do: "Log in to create rooms and chat", else: "Create an account to get started" %>
+              </p>
+            </div>
+            
+            <!-- Error Message -->
+            <%= if @auth_error do %>
+              <div class="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm">
+                <%= @auth_error %>
+              </div>
+            <% end %>
+            
+            <!-- Login Form -->
+            <%= if @auth_mode == :login do %>
+              <form phx-submit="login" class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-1">Email</label>
+                  <input
+                    type="email"
+                    name="email"
+                    required
+                    class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-1">Password</label>
+                  <input
+                    type="password"
+                    name="password"
+                    required
+                    class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+                    placeholder="••••••••"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  class="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold rounded-lg transition"
+                >
+                  Log In
+                </button>
+              </form>
+              <p class="text-center text-gray-400 mt-4">
+                Don't have an account?
+                <button phx-click="switch_to_register" class="text-purple-400 hover:text-purple-300 font-semibold ml-1">
+                  Sign Up
+                </button>
+              </p>
+            <% else %>
+              <!-- Register Form -->
+              <form phx-submit="register" class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-1">Username</label>
+                  <input
+                    type="text"
+                    name="username"
+                    required
+                    minlength="2"
+                    maxlength="20"
+                    class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+                    placeholder="cooluser123"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-1">Email</label>
+                  <input
+                    type="email"
+                    name="email"
+                    required
+                    class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-300 mb-1">Password</label>
+                  <input
+                    type="password"
+                    name="password"
+                    required
+                    minlength="6"
+                    class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+                    placeholder="••••••••"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  class="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold rounded-lg transition"
+                >
+                  Create Account
+                </button>
+              </form>
+              <p class="text-center text-gray-400 mt-4">
+                Already have an account?
+                <button phx-click="switch_to_login" class="text-purple-400 hover:text-purple-300 font-semibold ml-1">
+                  Log In
+                </button>
+              </p>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end

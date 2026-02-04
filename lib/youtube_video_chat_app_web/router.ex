@@ -20,7 +20,8 @@ defmodule YoutubeVideoChatAppWeb.Router do
   scope "/", YoutubeVideoChatAppWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    # Redirect root to rooms page
+    get "/", PageController, :redirect_to_rooms
     get "/test_soundcloud", TestController, :soundcloud_test
   end
 
@@ -41,6 +42,7 @@ defmodule YoutubeVideoChatAppWeb.Router do
     pipe_through [:browser]
 
     delete "/logout", UserSessionController, :delete
+    get "/auth/callback", UserSessionController, :token_login  # Token-based login from modal
   end
 
   ## Room routes - accessible to all (guests and users)

@@ -236,7 +236,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         {:noreply, assign(socket, :add_video_url, "")}
       else
         Logger.error("Failed to parse URL as media")
-        {:noreply, put_flash(socket, :error, "Invalid YouTube or SoundCloud URL")}
+        {:noreply, put_flash(socket, :error, "Invalid YouTube, SoundCloud, or Bandcamp URL")}
       end
     end
   end
@@ -325,6 +325,26 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   def handle_event("manual_play_soundcloud", _params, socket) do
     Logger.info("Manual play SoundCloud triggered")
     {:noreply, push_event(socket, "force_play_soundcloud", %{})}
+  end
+
+  # Bandcamp timer start - called when host clicks "I Started Playing" button
+  @impl true
+  def handle_event("bandcamp_started", _params, socket) do
+    Logger.info("\n" <> String.duplicate("=", 50))
+    Logger.info("▶️ BANDCAMP_STARTED EVENT RECEIVED")
+    Logger.info(String.duplicate("=", 50))
+    Logger.info("Is host: #{socket.assigns.is_host}")
+    
+    if socket.assigns.is_host do
+      Logger.info("🚀 Host starting Bandcamp timer...")
+      result = RoomServer.start_bandcamp_timer(socket.assigns.room.id)
+      Logger.info("✅ Result: #{inspect(result)}")
+    else
+      Logger.warning("⚠️ Non-host tried to start Bandcamp timer")
+    end
+    
+    Logger.info(String.duplicate("=", 50) <> "\n")
+    {:noreply, socket}
   end
 
   @impl true
@@ -478,41 +498,40 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     youtube_result = extract_youtube_id(url)
     Logger.debug("YouTube check result: #{inspect(youtube_result)}")
     
-    if youtube_result do
-      Logger.debug("Detected as YouTube video")
-      %{
-        "type" => "youtube",
-        "media_id" => youtube_result,
-        "title" => "YouTube Video",
-        "thumbnail" => "https://img.youtube.com/vi/#{youtube_result}/mqdefault.jpg",
-        "duration" => 180,
-        "embed_url" => "https://www.youtube.com/embed/#{youtube_result}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
-      }
-    else
-      # Check for SoundCloud - VERY permissive
-      is_soundcloud = String.contains?(String.downcase(url), "soundcloud.com")
-      Logger.debug("SoundCloud check: contains 'soundcloud.com'? #{is_soundcloud}")
+    cond do
+      youtube_result != nil ->
+        Logger.debug("Detected as YouTube video")
+        %{
+          "type" => "youtube",
+          "media_id" => youtube_result,
+          "title" => "YouTube Video",
+          "thumbnail" => "https://img.youtube.com/vi/#{youtube_result}/mqdefault.jpg",
+          "duration" => 180,
+          "embed_url" => "https://www.youtube.com/embed/#{youtube_result}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
+        }
       
-      if is_soundcloud do
+      String.contains?(String.downcase(url), "soundcloud.com") ->
         Logger.debug("Attempting to parse as SoundCloud...")
         extract_soundcloud_data(url)
-      else
-        # Check if it's a direct YouTube ID
-        if String.match?(url, ~r/^[A-Za-z0-9_-]{11}$/) do
-          Logger.debug("Detected as direct YouTube ID")
-          %{
-            "type" => "youtube",
-            "media_id" => url,
-            "title" => "YouTube Video",
-            "thumbnail" => "https://img.youtube.com/vi/#{url}/mqdefault.jpg",
-            "duration" => 180,
-            "embed_url" => "https://www.youtube.com/embed/#{url}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
-          }
-        else
-          Logger.debug("Not recognized as any supported media type")
-          nil
-        end
-      end
+      
+      String.contains?(String.downcase(url), "bandcamp.com") ->
+        Logger.debug("Attempting to parse as Bandcamp...")
+        extract_bandcamp_data(url)
+      
+      String.match?(url, ~r/^[A-Za-z0-9_-]{11}$/) ->
+        Logger.debug("Detected as direct YouTube ID")
+        %{
+          "type" => "youtube",
+          "media_id" => url,
+          "title" => "YouTube Video",
+          "thumbnail" => "https://img.youtube.com/vi/#{url}/mqdefault.jpg",
+          "duration" => 180,
+          "embed_url" => "https://www.youtube.com/embed/#{url}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
+        }
+      
+      true ->
+        Logger.debug("Not recognized as any supported media type")
+        nil
     end
   end
 
@@ -670,6 +689,32 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   defp generate_soundcloud_thumbnail do
     # Return a data URI with an SVG SoundCloud logo on gradient background
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 180' fill='none'%3E%3Crect width='320' height='180' fill='url(%23gradient)'/%3E%3Cg transform='translate(160, 90)'%3E%3Cpath d='M-60 -20 Q-60 -30, -50 -30 L50 -30 Q60 -30, 60 -20 L60 20 Q60 30, 50 30 L-50 30 Q-60 30, -60 20 Z' fill='white' fill-opacity='0.2'/%3E%3Cpath d='M-30 -5v20h4V-12c-1.2-0.8-2.8-1.2-4-2zm-8 10v8h4V-8c-1.6 0.4-2.8 1.2-4 2zm16 0v10h4V-10c-1.2-0.8-2.8-1.6-4-2zm8 2v8h4V-8c-1.2-0.4-2.8-0.8-4-1.2zm8 2v6h4v-6c-1.2-0.4-2.8-0.4-4-0.8zm8 2V15h4V-5c-1.2 0-2.8 0-4 0zm8 0V15h4c0-2-1.6-3.6-4-5z' fill='white'/%3E%3C/g%3E%3Cdefs%3E%3ClinearGradient id='gradient' x1='0' y1='0' x2='320' y2='180'%3E%3Cstop offset='0%25' stop-color='%23ff5500'/%3E%3Cstop offset='100%25' stop-color='%23ff8800'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E"
+  end
+
+  defp extract_bandcamp_data(url) do
+    Logger.info("=== EXTRACTING BANDCAMP DATA ===")
+    Logger.info("Input URL: #{url}")
+    
+    alias YoutubeVideoChatApp.Bandcamp
+    
+    case Bandcamp.fetch_track_info(url) do
+      {:ok, info} ->
+        Logger.info("Bandcamp parse success: #{info.title}")
+        
+        %{
+          "type" => "bandcamp",
+          "media_id" => info.id,
+          "title" => "#{info.title} by #{info.artist}",
+          "thumbnail" => info.artwork,
+          "duration" => info.duration,
+          "embed_url" => info.embed_url,
+          "original_url" => info.original_url
+        }
+      
+      {:error, reason} ->
+        Logger.error("Bandcamp parse failed: #{inspect(reason)}")
+        nil
+    end
   end
 
   # Enhanced linkify_text function with image support
