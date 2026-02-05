@@ -20,8 +20,99 @@ window.playerState = {
   playerReady: false,
   endTriggered: false,
   ytPlayer: null,  // YouTube player instance
-  isNewTrack: false // Flag to indicate this is a freshly started track (not mid-join)
+  isNewTrack: false, // Flag to indicate this is a freshly started track (not mid-join)
+  volume: parseInt(localStorage.getItem('playerVolume') || '80', 10) // Persisted volume (0-100)
 };
+
+// ===========================================
+// VOLUME CONTROL
+// ===========================================
+window.setPlayerVolume = function(value) {
+  const volume = Math.max(0, Math.min(100, parseInt(value, 10)));
+  window.playerState.volume = volume;
+  localStorage.setItem('playerVolume', volume.toString());
+  
+  // Update the volume slider UI
+  const slider = document.getElementById('volume-slider');
+  if (slider) slider.value = volume;
+  
+  const volumeValue = document.getElementById('volume-value');
+  if (volumeValue) volumeValue.textContent = volume + '%';
+  
+  const volumeIcon = document.getElementById('volume-icon');
+  if (volumeIcon) {
+    if (volume === 0) {
+      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
+    } else if (volume < 50) {
+      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+    } else {
+      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+    }
+  }
+  
+  // Apply to current player
+  applyVolumeToPlayer(volume);
+};
+
+function applyVolumeToPlayer(volume) {
+  // YouTube
+  if (window.playerState.ytPlayer && typeof window.playerState.ytPlayer.setVolume === 'function') {
+    try {
+      window.playerState.ytPlayer.setVolume(volume);
+      console.log('[Volume] Set YouTube volume to:', volume);
+    } catch (e) {
+      console.warn('[Volume] Failed to set YouTube volume:', e);
+    }
+  }
+  
+  // SoundCloud
+  if (window.scWidget && typeof window.scWidget.setVolume === 'function') {
+    try {
+      window.scWidget.setVolume(volume);
+      console.log('[Volume] Set SoundCloud volume to:', volume);
+    } catch (e) {
+      console.warn('[Volume] Failed to set SoundCloud volume:', e);
+    }
+  }
+  
+  // Bandcamp HTML5 audio
+  if (window.playerState.bandcampAudio) {
+    try {
+      window.playerState.bandcampAudio.volume = volume / 100;
+      console.log('[Volume] Set Bandcamp audio volume to:', volume / 100);
+    } catch (e) {
+      console.warn('[Volume] Failed to set Bandcamp volume:', e);
+    }
+  }
+}
+
+// Toggle mute
+window.toggleMute = function() {
+  if (window.playerState.volume > 0) {
+    window.playerState.previousVolume = window.playerState.volume;
+    window.setPlayerVolume(0);
+  } else {
+    window.setPlayerVolume(window.playerState.previousVolume || 80);
+  }
+};
+
+// Toggle volume popup
+window.toggleVolumePopup = function() {
+  const popup = document.getElementById('volume-popup');
+  if (popup) {
+    popup.classList.toggle('hidden');
+  }
+};
+
+// Close volume popup when clicking outside
+document.addEventListener('click', (e) => {
+  const volumeControl = document.getElementById('volume-control');
+  const popup = document.getElementById('volume-popup');
+  
+  if (volumeControl && popup && !volumeControl.contains(e.target)) {
+    popup.classList.add('hidden');
+  }
+});
 
 // ===========================================
 // BANDCAMP TIMER START
@@ -161,6 +252,8 @@ function createPlayer(media, serverStartedAt, isHost) {
   // Store state
   // For new tracks, use current time as the start time (ignoring server timestamp)
   // This ensures playback starts from 0 and sync is based on when THIS client started
+  // IMPORTANT: Preserve the volume setting from localStorage
+  const savedVolume = parseInt(localStorage.getItem('playerVolume') || '80', 10);
   window.playerState = {
     videoStartedAt: isNewTrack ? now : serverStartedAt,
     localPlaybackStartedAt: now,
@@ -170,7 +263,9 @@ function createPlayer(media, serverStartedAt, isHost) {
     playerReady: false,
     endTriggered: false,
     ytPlayer: null,
-    isNewTrack: isNewTrack
+    isNewTrack: isNewTrack,
+    volume: savedVolume,
+    previousVolume: window.playerState.previousVolume || savedVolume
   };
   
   // Build player HTML
@@ -364,6 +459,11 @@ function initBandcampAudio(startPosition, isHost, duration) {
   window.playerState.bandcampDuration = duration;
   window.playerState.bandcampAudio = audio;
   
+  // Apply saved volume
+  const savedVolume = window.playerState.volume;
+  audio.volume = savedVolume / 100;
+  console.log('[Bandcamp] Applied saved volume:', savedVolume);
+  
   // Handle canplay event - seek to position and play
   audio.addEventListener('canplay', function onCanPlay() {
     console.log("[Bandcamp] Audio can play");
@@ -498,6 +598,10 @@ function initYouTubePlayer(videoId, startSeconds, isHost) {
         onReady: (event) => {
           console.log("[YouTube] Player ready");
           window.playerState.playerReady = true;
+          // Apply saved volume
+          const savedVolume = window.playerState.volume;
+          event.target.setVolume(savedVolume);
+          console.log('[YouTube] Applied saved volume:', savedVolume);
           event.target.playVideo();
         },
         onStateChange: (event) => {
@@ -592,6 +696,11 @@ function initSoundCloud(startPosition, isHost) {
   widget.bind(window.SC.Widget.Events.READY, () => {
     console.log("[SoundCloud] Ready");
     window.playerState.playerReady = true;
+    
+    // Apply saved volume
+    const savedVolume = window.playerState.volume;
+    widget.setVolume(savedVolume);
+    console.log('[SoundCloud] Applied saved volume:', savedVolume);
     
     widget.play();
     
@@ -859,5 +968,58 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide());
 
 liveSocket.connect();
 window.liveSocket = liveSocket;
+
+// Function to initialize volume UI with saved value
+function initializeVolumeUI() {
+  const savedVolume = parseInt(localStorage.getItem('playerVolume') || '80', 10);
+  
+  // Make sure playerState has the correct volume
+  if (window.playerState) {
+    window.playerState.volume = savedVolume;
+  }
+  
+  const slider = document.getElementById('volume-slider');
+  const volumeValue = document.getElementById('volume-value');
+  const volumeIcon = document.getElementById('volume-icon');
+  
+  if (slider) {
+    slider.value = savedVolume;
+  }
+  if (volumeValue) {
+    volumeValue.textContent = savedVolume + '%';
+  }
+  if (volumeIcon) {
+    if (savedVolume === 0) {
+      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
+    } else if (savedVolume < 50) {
+      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+    } else {
+      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+    }
+  }
+  
+  console.log('[Volume] Initialized UI with saved volume:', savedVolume);
+}
+
+// Initialize volume control UI on page load
+document.addEventListener('DOMContentLoaded', initializeVolumeUI);
+
+// Also initialize on LiveView navigation
+window.addEventListener('phx:page-loading-stop', () => {
+  setTimeout(initializeVolumeUI, 100);
+});
+
+// Watch for the volume control element to appear (for LiveView dynamic content)
+const volumeObserver = new MutationObserver((mutations) => {
+  const slider = document.getElementById('volume-slider');
+  if (slider && slider.value === '80' && localStorage.getItem('playerVolume')) {
+    initializeVolumeUI();
+  }
+});
+
+// Start observing when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  volumeObserver.observe(document.body, { childList: true, subtree: true });
+});
 
 console.log("✅ Simple sync player loaded (with YouTube IFrame API)");
