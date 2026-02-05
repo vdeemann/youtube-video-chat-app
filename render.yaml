@@ -21,6 +21,10 @@ services:
     envVars:
       - key: MIX_ENV
         value: prod
+      - key: ELIXIR_VERSION
+        value: 1.17.3
+      - key: ERLANG_VERSION
+        value: 26.2.5
       - key: SECRET_KEY_BASE
         generateValue: true
       - key: PHX_HOST
