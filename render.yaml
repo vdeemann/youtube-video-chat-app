@@ -17,7 +17,7 @@ services:
       npm install --prefix ./assets
       MIX_ENV=prod mix assets.deploy
       MIX_ENV=prod mix phx.digest
-    startCommand: MIX_ENV=prod mix phx.server
+    startCommand: MIX_ENV=prod mix ecto.migrate && MIX_ENV=prod mix phx.server
     envVars:
       - key: MIX_ENV
         value: prod
