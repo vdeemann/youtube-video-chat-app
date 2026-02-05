@@ -16,7 +16,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     :host_id,
     :viewers,
     :last_sync,
-    :check_timer      # Timer reference for checking video progress
+    :messages         # Recent chat messages (last 50)
   ]
 
   # Client API
@@ -58,8 +58,8 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     :exit, _ -> {:error, :room_not_found}
   end
 
-  def start_bandcamp_timer(room_id) do
-    GenServer.call({:global, {:room, room_id}}, :start_bandcamp_timer)
+  def add_multiple_to_queue(room_id, media_items, user) do
+    GenServer.call({:global, {:room, room_id}}, {:add_multiple_to_queue, media_items, user})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
@@ -67,6 +67,18 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def update_video_progress(room_id, current_time, duration) do
     GenServer.cast({:global, {:room, room_id}}, 
       {:update_progress, current_time, duration})
+  catch
+    :exit, _ -> {:error, :room_not_found}
+  end
+
+  def add_message(room_id, message) do
+    GenServer.cast({:global, {:room, room_id}}, {:add_message, message})
+  catch
+    :exit, _ -> {:error, :room_not_found}
+  end
+
+  def get_messages(room_id) do
+    GenServer.call({:global, {:room, room_id}}, :get_messages)
   catch
     :exit, _ -> {:error, :room_not_found}
   end
@@ -90,7 +102,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       host_id: room.host_id,
       viewers: MapSet.new(),
       last_sync: System.monotonic_time(:second),
-      check_timer: nil
+      messages: []
     }
     
     {:ok, state}
@@ -102,33 +114,8 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   @impl true
-  def handle_call(:start_bandcamp_timer, _from, state) do
-    Logger.info("\n========================================")
-    Logger.info("▶️ START_BANDCAMP_TIMER CALLED")
-    Logger.info("========================================")
-    
-    if state.current_media && state.current_media.type == "bandcamp" do
-      # Cancel any existing timer
-      cancel_check_timer(state.check_timer)
-      
-      # Start the duration timer
-      duration = state.current_media.duration || 180
-      timer_ref = start_duration_timer(state.room_id, duration)
-      
-      # Update video_started_at to now (for accurate timing)
-      new_state = %{state | 
-        check_timer: timer_ref,
-        video_started_at: DateTime.utc_now()
-      }
-      
-      Logger.info("✅ Bandcamp timer started for #{duration}s")
-      Logger.info("========================================\n")
-      
-      {:reply, :ok, new_state}
-    else
-      Logger.warning("⚠️ No Bandcamp track currently playing")
-      {:reply, {:error, :not_bandcamp}, state}
-    end
+  def handle_call(:get_messages, _from, state) do
+    {:reply, {:ok, state.messages || []}, state}
   end
 
   @impl true
@@ -157,13 +144,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     new_state = if is_nil(state.current_media) do
       Logger.info("✅ No current media, starting playback immediately")
       
-      # Cancel any existing timer
-      cancel_check_timer(state.check_timer)
-      
-      # For Bandcamp tracks, DON'T start timer automatically
-      # Wait for user to click "I Started Playing" button
-      timer_ref = nil
-      
       # Broadcast to all clients in proper order
       broadcast_media_change(state.room_id, media)
       broadcast_queue_update(state.room_id, state.queue)
@@ -176,8 +156,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
         current_media: media, 
         video_state: "playing",
         video_timestamp: 0,
-        video_started_at: DateTime.utc_now(),
-        check_timer: timer_ref
+        video_started_at: DateTime.utc_now()
       }
     else
       # Add to queue
@@ -212,9 +191,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       end)
     end
     
-    # Cancel any existing timer
-    cancel_check_timer(state.check_timer)
-    
     case state.queue do
       [next | rest] ->
         Logger.info("\n✅ ADVANCING TO NEXT TRACK")
@@ -229,18 +205,13 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
           end)
         end
         
-        # For Bandcamp tracks, DON'T start timer automatically
-        # Wait for user to click "I Started Playing" button  
-        timer_ref = nil
-        
         # UPDATE STATE FIRST before broadcasting
         new_state = %{state | 
           current_media: next,
           queue: rest,
           video_state: "playing",
           video_timestamp: 0,
-          video_started_at: DateTime.utc_now(),
-          check_timer: timer_ref
+          video_started_at: DateTime.utc_now()
         }
         
         # Now broadcast with the correct updated queue
@@ -263,7 +234,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
           video_state: "paused",
           video_timestamp: 0,
           video_started_at: nil,
-          check_timer: nil,
           queue: []
         }
         
@@ -275,6 +245,60 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
         Logger.info("========================================\n")
         {:reply, :ok, new_state}
     end
+  end
+
+  @impl true
+  def handle_call({:add_multiple_to_queue, media_items, user}, _from, state) do
+    Logger.info("\n=== ADDING MULTIPLE TO QUEUE ===")
+    Logger.info("Adding #{length(media_items)} items from playlist")
+    
+    # Convert all items to the proper format
+    converted_items = Enum.map(media_items, fn item ->
+      %{
+        id: Ecto.UUID.generate(),
+        type: item[:type] || item["type"],
+        media_id: item[:media_id] || item["media_id"],
+        title: item[:title] || item["title"] || "Unknown",
+        thumbnail: item[:thumbnail] || item["thumbnail"],
+        duration: item[:duration] || item["duration"] || 180,
+        embed_url: item[:embed_url] || item["embed_url"],
+        original_url: item[:original_url] || item["original_url"],
+        added_by_username: user.username,
+        added_by_id: user.id,
+        added_at: DateTime.utc_now()
+      }
+    end)
+    
+    # If nothing is playing, start the first one immediately
+    new_state = if is_nil(state.current_media) and length(converted_items) > 0 do
+      [first | rest] = converted_items
+      new_queue = state.queue ++ rest
+      
+      Logger.info("✅ Starting first track: #{first.title}")
+      Logger.info("📁 Adding #{length(rest)} more to queue")
+      
+      broadcast_media_change(state.room_id, first)
+      broadcast_queue_update(state.room_id, new_queue)
+      broadcast_play_next(state.room_id, first, new_queue)
+      
+      %{state | 
+        current_media: first, 
+        video_state: "playing",
+        video_timestamp: 0,
+        video_started_at: DateTime.utc_now(),
+        queue: new_queue
+      }
+    else
+      # Add all to queue
+      new_queue = state.queue ++ converted_items
+      Logger.info("📁 Added #{length(converted_items)} items to queue")
+      Logger.info("📁 New queue size: #{length(new_queue)}")
+      
+      broadcast_queue_update(state.room_id, new_queue)
+      %{state | queue: new_queue}
+    end
+    
+    {:reply, {:ok, length(converted_items)}, new_state}
   end
 
   @impl true
@@ -296,67 +320,11 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     {:noreply, %{state | video_timestamp: current_time}}
   end
 
-  # Duration timer for Bandcamp tracks (which don't have a JS API to detect end)
   @impl true
-  def handle_info(:bandcamp_duration_check, state) do
-    Logger.info("\n========================================")
-    Logger.info("⏰ BANDCAMP DURATION TIMER FIRED")
-    Logger.info("========================================")
-    
-    if state.current_media && state.current_media.type == "bandcamp" do
-      Logger.info("🎵 Track finished: #{state.current_media.title}")
-      Logger.info("🚀 Auto-advancing to next track...")
-      
-      # Cancel the timer (it already fired, but clear the reference)
-      cancel_check_timer(state.check_timer)
-      
-      case state.queue do
-        [next | rest] ->
-          Logger.info("✅ Next track: #{next.title}")
-          
-          # Start timer for next track if it's also Bandcamp
-          timer_ref = if next.type == "bandcamp" do
-            start_duration_timer(state.room_id, next.duration)
-          else
-            nil
-          end
-          
-          new_state = %{state | 
-            current_media: next,
-            queue: rest,
-            video_state: "playing",
-            video_timestamp: 0,
-            video_started_at: DateTime.utc_now(),
-            check_timer: timer_ref
-          }
-          
-          broadcast_media_change(state.room_id, next)
-          broadcast_queue_update(state.room_id, rest)
-          broadcast_play_next(state.room_id, next, rest)
-          
-          {:noreply, new_state}
-        
-        [] ->
-          Logger.info("⚠️ Queue is empty, stopping playback")
-          
-          new_state = %{state | 
-            current_media: nil,
-            video_state: "paused",
-            video_timestamp: 0,
-            video_started_at: nil,
-            check_timer: nil
-          }
-          
-          broadcast_media_change(state.room_id, nil)
-          broadcast_queue_update(state.room_id, [])
-          broadcast_play_next(state.room_id, nil, [])
-          
-          {:noreply, new_state}
-      end
-    else
-      Logger.info("⚠️ Timer fired but current media is not Bandcamp, ignoring")
-      {:noreply, state}
-    end
+  def handle_cast({:add_message, message}, state) do
+    # Add message to the front, keep only last 50
+    messages = [message | (state.messages || [])] |> Enum.take(50)
+    {:noreply, %{state | messages: messages}}
   end
 
   @impl true
@@ -415,20 +383,5 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       "room:#{room_id}",
       {:play_next, media, queue}
     )
-  end
-
-  # Duration timer for Bandcamp tracks
-  # Bandcamp doesn't have a JavaScript API, so we use server-side timing
-  defp start_duration_timer(_room_id, duration) do
-    # Add a small buffer (5 seconds) to account for loading/buffering
-    timer_duration = (duration + 5) * 1000
-    Logger.info("⏰ Starting Bandcamp duration timer for #{duration}s (+5s buffer = #{timer_duration}ms)")
-    Process.send_after(self(), :bandcamp_duration_check, timer_duration)
-  end
-
-  defp cancel_check_timer(nil), do: :ok
-  defp cancel_check_timer(timer_ref) do
-    Process.cancel_timer(timer_ref)
-    :ok
   end
 end

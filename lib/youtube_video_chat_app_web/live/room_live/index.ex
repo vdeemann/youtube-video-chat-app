@@ -10,10 +10,18 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
     current_user = socket.assigns[:current_user]
     is_guest = is_nil(current_user)
     
+    # Get user's existing room if they have one
+    user_room = if current_user do
+      Rooms.list_user_rooms(current_user.id) |> List.first()
+    else
+      nil
+    end
+    
     {:ok,
      socket
      |> assign(:rooms, rooms)
      |> assign(:is_guest, is_guest)
+     |> assign(:user_room, user_room)
      |> assign(:show_auth_modal, false)
      |> assign(:auth_mode, :login)  # :login or :register
      |> assign(:auth_error, nil)
@@ -39,12 +47,39 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
         is_public: true
       }
       
-      case Rooms.create_room(attrs) do
+      case Rooms.create_room_for_user(attrs, user.id) do
         {:ok, room} ->
           {:noreply, push_navigate(socket, to: ~p"/room/#{room.slug}")}
         
+        {:error, :room_limit_reached} ->
+          {:noreply, put_flash(socket, :error, "You can only create 1 room. Delete your existing room to create a new one.")}
+        
         {:error, _changeset} ->
           {:noreply, put_flash(socket, :error, "Could not create room")}
+      end
+    end
+  end
+
+  @impl true
+  def handle_event("delete_room", %{"id" => room_id}, socket) do
+    if socket.assigns.is_guest do
+      {:noreply, socket}
+    else
+      user = socket.assigns.current_user
+      room = Rooms.get_room!(room_id)
+      
+      # Only allow deletion if user owns the room
+      if room.host_id == user.id do
+        Rooms.delete_room(room)
+        rooms = Rooms.list_public_rooms()
+        
+        {:noreply,
+         socket
+         |> assign(:rooms, rooms)
+         |> assign(:user_room, nil)
+         |> put_flash(:info, "Room deleted successfully")}
+      else
+        {:noreply, put_flash(socket, :error, "You can only delete your own room")}
       end
     end
   end
@@ -203,12 +238,39 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
               </div>
             </div>
           <% else %>
-            <button
-              phx-click="create_room"
-              class="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white text-xl font-bold rounded-full transform transition hover:scale-105 shadow-xl"
-            >
-              🚀 Create New Room
-            </button>
+            <%= if @user_room do %>
+              <!-- User already has a room -->
+              <div class="bg-white/5 backdrop-blur rounded-2xl p-6 max-w-md mx-auto border border-purple-500/30">
+                <p class="text-gray-400 text-sm mb-3">Your Room</p>
+                <.link
+                  navigate={~p"/room/#{@user_room.slug}"}
+                  class="block bg-gradient-to-r from-purple-600/20 to-pink-600/20 hover:from-purple-600/30 hover:to-pink-600/30 border border-purple-500/50 rounded-xl p-4 transition"
+                >
+                  <h3 class="text-xl font-bold text-white mb-1"><%= @user_room.name %></h3>
+                  <p class="text-purple-300 text-sm">/<%= @user_room.slug %></p>
+                </.link>
+                <div class="flex items-center justify-between mt-4">
+                  <p class="text-gray-500 text-xs">
+                    You can only have 1 room at a time
+                  </p>
+                  <button
+                    phx-click="delete_room"
+                    phx-value-id={@user_room.id}
+                    data-confirm="Are you sure you want to delete your room? This cannot be undone."
+                    class="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm rounded-lg transition"
+                  >
+                    Delete Room
+                  </button>
+                </div>
+              </div>
+            <% else %>
+              <button
+                phx-click="create_room"
+                class="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white text-xl font-bold rounded-full transform transition hover:scale-105 shadow-xl"
+              >
+                🚀 Create New Room
+              </button>
+            <% end %>
           <% end %>
         </div>
         

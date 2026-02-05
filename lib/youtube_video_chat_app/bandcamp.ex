@@ -131,13 +131,38 @@ defmodule YoutubeVideoChatApp.Bandcamp do
     # Try to get duration from the page
     duration = extract_duration(html, document)
     
+    # Try to extract the MP3 stream URL from TralbumData
+    stream_url = extract_stream_url(html)
+    
     if track_id do
       {:ok, %{
         id: track_id,
-        duration: duration || 180  # Default to 3 minutes if we can't find duration
+        duration: duration || 180,  # Default to 3 minutes if we can't find duration
+        stream_url: stream_url
       }}
     else
       {:error, :no_track_id_found}
+    end
+  end
+
+  # Extract the MP3 stream URL from TralbumData JSON
+  defp extract_stream_url(html) do
+    # Look for the trackinfo array in TralbumData which contains the mp3-128 stream URL
+    # Pattern: "file":{"mp3-128":"https://..."}
+    case Regex.run(~r/"mp3-128"\s*:\s*"([^"]+)"/, html) do
+      [_, url] -> 
+        Logger.info("[Bandcamp] Found stream URL: #{String.slice(url, 0..50)}...")
+        url
+      _ ->
+        # Try alternate pattern from trackinfo array
+        case Regex.run(~r/trackinfo.*?"file"\s*:\s*\{[^}]*"mp3-128"\s*:\s*"([^"]+)"/, html, dotall: true) do
+          [_, url] -> 
+            Logger.info("[Bandcamp] Found stream URL (alt): #{String.slice(url, 0..50)}...")
+            url
+          _ -> 
+            Logger.warning("[Bandcamp] Could not find stream URL")
+            nil
+        end
     end
   end
 

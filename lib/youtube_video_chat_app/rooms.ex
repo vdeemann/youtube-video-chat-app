@@ -22,10 +22,50 @@ defmodule YoutubeVideoChatApp.Rooms do
     Repo.get_by!(Room, slug: slug)
   end
 
+  @max_rooms_per_user 1
+
   def create_room(attrs \\ %{}) do
     %Room{}
     |> Room.changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc """
+  Creates a room for a user, checking the room limit first.
+  Returns {:error, :room_limit_reached} if user already has max rooms.
+  """
+  def create_room_for_user(attrs, user_id) do
+    if count_user_rooms(user_id) >= @max_rooms_per_user do
+      {:error, :room_limit_reached}
+    else
+      create_room(attrs)
+    end
+  end
+
+  @doc """
+  Returns the number of rooms owned by a user.
+  """
+  def count_user_rooms(user_id) do
+    Room
+    |> where([r], r.host_id == ^user_id)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  @doc """
+  Returns all rooms owned by a user.
+  """
+  def list_user_rooms(user_id) do
+    Room
+    |> where([r], r.host_id == ^user_id)
+    |> order_by([r], desc: r.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Checks if a user can create more rooms.
+  """
+  def can_create_room?(user_id) do
+    count_user_rooms(user_id) < @max_rooms_per_user
   end
 
   def update_room(%Room{} = room, attrs) do

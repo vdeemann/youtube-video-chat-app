@@ -1,6 +1,6 @@
 defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   use YoutubeVideoChatAppWeb, :live_view
-  alias YoutubeVideoChatApp.{Rooms, Accounts}
+  alias YoutubeVideoChatApp.{Rooms, Accounts, Playlists}
   alias YoutubeVideoChatApp.Rooms.RoomServer
   alias YoutubeVideoChatAppWeb.Presence
   alias Phoenix.PubSub
@@ -79,11 +79,21 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     Logger.info("   → IS HOST: #{is_host}")
     Logger.info("   → IS GUEST: #{is_guest}")
     
+    # Get user's playlists if they're logged in
+    {user_playlists, main_playlist} = if socket.assigns[:current_user] do
+      playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
+      main = Enum.find(playlists, fn p -> p.is_main end)
+      main_with_items = if main, do: Playlists.get_playlist_with_items!(main.id), else: nil
+      {playlists, main_with_items}
+    else
+      {[], nil}
+    end
+    
     socket = socket
     |> assign(:room, room)
     |> assign(:user, user)
     |> assign(:is_guest, is_guest)
-    |> assign(:messages, [])
+    |> assign(:messages, load_recent_messages(room.id))
     |> assign(:current_media, room_state.current_media)
     |> assign(:video_state, room_state.video_state)
     |> assign(:video_timestamp, current_timestamp)
@@ -95,6 +105,13 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:add_video_url, "")
     |> assign(:last_played_track_id, room_state.current_media && (room_state.current_media[:id] || room_state.current_media.id))
     |> assign(:show_login_prompt, false)
+    |> assign(:main_playlist, main_playlist)
+    |> assign(:user_playlists, user_playlists)
+    |> assign(:show_playlist_modal, false)
+    |> assign(:playlist_modal_view, :list)  # :list, :show, :new
+    |> assign(:selected_playlist, nil)
+    |> assign(:new_playlist_name, "")
+    |> assign(:playlist_add_url, "")
     |> push_event("set_host_status", %{is_host: is_host})
     
     # Always send create_player event if there's media
@@ -121,6 +138,14 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     end
     
     {:ok, socket |> handle_joins(Presence.list("room:#{room.id}"))}
+  end
+
+  # Load recent messages from RoomServer
+  defp load_recent_messages(room_id) do
+    case RoomServer.get_messages(room_id) do
+      {:ok, messages} -> messages
+      {:error, _} -> []
+    end
   end
 
   # Get user from session or create a guest
@@ -154,6 +179,9 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         color: socket.assigns.user.color,
         timestamp: DateTime.utc_now()
       }
+      
+      # Store message in RoomServer for chat history
+      RoomServer.add_message(socket.assigns.room.id, message)
       
       # Broadcast to all viewers
       PubSub.broadcast(
@@ -203,6 +231,20 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   @impl true
+  def handle_event("delete_room", _params, socket) do
+    room = socket.assigns.room
+    current_user = socket.assigns[:current_user]
+    
+    # Only allow deletion if user owns the room
+    if current_user && room.host_id == current_user.id do
+      Rooms.delete_room(room)
+      {:noreply, push_navigate(socket, to: ~p"/rooms") |> put_flash(:info, "Room deleted successfully")}
+    else
+      {:noreply, put_flash(socket, :error, "You can only delete your own room")}
+    end
+  end
+
+  @impl true
   def handle_event("toggle_queue", _params, socket) do
     {:noreply, assign(socket, :show_queue, !socket.assigns.show_queue)}
   end
@@ -236,7 +278,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         {:noreply, assign(socket, :add_video_url, "")}
       else
         Logger.error("Failed to parse URL as media")
-        {:noreply, put_flash(socket, :error, "Invalid YouTube, SoundCloud, or Bandcamp URL")}
+        {:noreply, put_flash(socket, :error, "Invalid YouTube or SoundCloud URL")}
       end
     end
   end
@@ -327,24 +369,300 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     {:noreply, push_event(socket, "force_play_soundcloud", %{})}
   end
 
-  # Bandcamp timer start - called when host clicks "I Started Playing" button
+  # ============================================================================
+  # Playlist Modal Events
+  # ============================================================================
+
   @impl true
-  def handle_event("bandcamp_started", _params, socket) do
-    Logger.info("\n" <> String.duplicate("=", 50))
-    Logger.info("▶️ BANDCAMP_STARTED EVENT RECEIVED")
-    Logger.info(String.duplicate("=", 50))
-    Logger.info("Is host: #{socket.assigns.is_host}")
-    
-    if socket.assigns.is_host do
-      Logger.info("🚀 Host starting Bandcamp timer...")
-      result = RoomServer.start_bandcamp_timer(socket.assigns.room.id)
-      Logger.info("✅ Result: #{inspect(result)}")
+  def handle_event("open_playlist_modal", _params, socket) do
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
     else
-      Logger.warning("⚠️ Non-host tried to start Bandcamp timer")
+      # Refresh playlists when opening modal
+      playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
+      {:noreply, assign(socket,
+        show_playlist_modal: true,
+        playlist_modal_view: :list,
+        user_playlists: playlists,
+        selected_playlist: nil
+      )}
+    end
+  end
+
+  @impl true
+  def handle_event("close_playlist_modal", _params, socket) do
+    {:noreply, assign(socket,
+      show_playlist_modal: false,
+      playlist_modal_view: :list,
+      selected_playlist: nil,
+      new_playlist_name: "",
+      playlist_add_url: ""
+    )}
+  end
+
+  @impl true
+  def handle_event("playlist_show_new_form", _params, socket) do
+    {:noreply, assign(socket, playlist_modal_view: :new, new_playlist_name: "")}
+  end
+
+  @impl true
+  def handle_event("playlist_back_to_list", _params, socket) do
+    playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
+    {:noreply, assign(socket,
+      playlist_modal_view: :list,
+      selected_playlist: nil,
+      user_playlists: playlists,
+      playlist_add_url: ""
+    )}
+  end
+
+  @impl true
+  def handle_event("playlist_create", %{"name" => name}, socket) do
+    user = socket.assigns.current_user
+    
+    case Playlists.create_playlist(%{name: name, user_id: user.id}) do
+      {:ok, playlist} ->
+        playlists = Playlists.list_user_playlists_with_counts(user.id)
+        playlist_with_items = Playlists.get_playlist_with_items!(playlist.id)
+        {:noreply, assign(socket,
+          user_playlists: playlists,
+          playlist_modal_view: :show,
+          selected_playlist: playlist_with_items,
+          new_playlist_name: ""
+        ) |> put_flash(:info, "Playlist created!")}
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to create playlist")}
+    end
+  end
+
+  @impl true
+  def handle_event("playlist_view", %{"id" => playlist_id}, socket) do
+    user = socket.assigns.current_user
+    
+    case Playlists.get_user_playlist(user.id, playlist_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Playlist not found")}
+      playlist ->
+        playlist_with_items = Playlists.get_playlist_with_items!(playlist.id)
+        {:noreply, assign(socket,
+          playlist_modal_view: :show,
+          selected_playlist: playlist_with_items
+        )}
+    end
+  end
+
+  @impl true
+  def handle_event("playlist_delete", %{"id" => playlist_id}, socket) do
+    user = socket.assigns.current_user
+    
+    if playlist = Playlists.get_user_playlist(user.id, playlist_id) do
+      Playlists.delete_playlist(playlist)
+      playlists = Playlists.list_user_playlists_with_counts(user.id)
+      # Update main_playlist if it was deleted
+      main = Enum.find(playlists, fn p -> p.is_main end)
+      main_with_items = if main, do: Playlists.get_playlist_with_items!(main.id), else: nil
+      
+      {:noreply, assign(socket,
+        user_playlists: playlists,
+        main_playlist: main_with_items,
+        playlist_modal_view: :list,
+        selected_playlist: nil
+      ) |> put_flash(:info, "Playlist deleted")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("playlist_set_main", %{"id" => playlist_id}, socket) do
+    user = socket.assigns.current_user
+    Playlists.set_main_playlist(user.id, playlist_id)
+    
+    playlists = Playlists.list_user_playlists_with_counts(user.id)
+    main = Enum.find(playlists, fn p -> p.is_main end)
+    main_with_items = if main, do: Playlists.get_playlist_with_items!(main.id), else: nil
+    
+    {:noreply, assign(socket,
+      user_playlists: playlists,
+      main_playlist: main_with_items
+    ) |> put_flash(:info, "Main playlist updated!")}
+  end
+
+  @impl true
+  def handle_event("playlist_unset_main", %{"id" => playlist_id}, socket) do
+    user = socket.assigns.current_user
+    
+    if playlist = Playlists.get_user_playlist(user.id, playlist_id) do
+      if playlist.is_main do
+        Playlists.unset_main_playlist(user.id)
+        playlists = Playlists.list_user_playlists_with_counts(user.id)
+        {:noreply, assign(socket,
+          user_playlists: playlists,
+          main_playlist: nil
+        ) |> put_flash(:info, "Main playlist unset")}
+      else
+        {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("playlist_add_track", %{"url" => url}, socket) do
+    playlist = socket.assigns.selected_playlist
+    
+    case parse_media_url(url) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Invalid URL")}
+      media_data ->
+        item_attrs = %{
+          media_type: media_data["type"],
+          media_id: media_data["media_id"],
+          title: media_data["title"],
+          thumbnail: media_data["thumbnail"],
+          duration: media_data["duration"],
+          embed_url: media_data["embed_url"],
+          original_url: url
+        }
+        
+        case Playlists.add_item_to_playlist(playlist.id, item_attrs) do
+          {:ok, _item} ->
+            updated_playlist = Playlists.get_playlist_with_items!(playlist.id)
+            playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
+            # Update main_playlist if this is it
+            main_with_items = if socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist.id do
+              updated_playlist
+            else
+              socket.assigns.main_playlist
+            end
+            
+            {:noreply, assign(socket,
+              selected_playlist: updated_playlist,
+              user_playlists: playlists,
+              main_playlist: main_with_items,
+              playlist_add_url: ""
+            ) |> put_flash(:info, "Track added!")}
+          {:error, _} ->
+            {:noreply, put_flash(socket, :error, "Failed to add track")}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("playlist_remove_track", %{"id" => item_id}, socket) do
+    Playlists.remove_item_from_playlist(item_id)
+    playlist = socket.assigns.selected_playlist
+    updated_playlist = Playlists.get_playlist_with_items!(playlist.id)
+    playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
+    
+    # Update main_playlist if this is it
+    main_with_items = if socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist.id do
+      updated_playlist
+    else
+      socket.assigns.main_playlist
     end
     
-    Logger.info(String.duplicate("=", 50) <> "\n")
-    {:noreply, socket}
+    {:noreply, assign(socket,
+      selected_playlist: updated_playlist,
+      user_playlists: playlists,
+      main_playlist: main_with_items
+    )}
+  end
+
+  @impl true
+  def handle_event("playlist_move_track_up", %{"id" => item_id}, socket) do
+    item = Playlists.get_playlist_item!(item_id)
+    if item.position > 1 do
+      Playlists.move_item(item_id, item.position - 1)
+    end
+    updated_playlist = Playlists.get_playlist_with_items!(socket.assigns.selected_playlist.id)
+    {:noreply, assign(socket, selected_playlist: updated_playlist)}
+  end
+
+  @impl true
+  def handle_event("playlist_move_track_down", %{"id" => item_id}, socket) do
+    item = Playlists.get_playlist_item!(item_id)
+    max_pos = length(socket.assigns.selected_playlist.items)
+    if item.position < max_pos do
+      Playlists.move_item(item_id, item.position + 1)
+    end
+    updated_playlist = Playlists.get_playlist_with_items!(socket.assigns.selected_playlist.id)
+    {:noreply, assign(socket, selected_playlist: updated_playlist)}
+  end
+
+  @impl true
+  def handle_event("load_playlist_to_queue", %{"id" => playlist_id}, socket) do
+    user = socket.assigns.current_user
+    
+    case Playlists.get_user_playlist(user.id, playlist_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Playlist not found")}
+      playlist ->
+        playlist = Playlists.get_playlist_with_items!(playlist.id)
+        
+        if Enum.empty?(playlist.items) do
+          {:noreply, put_flash(socket, :error, "This playlist is empty")}
+        else
+          media_items = Enum.map(playlist.items, fn item ->
+            %{
+              type: item.media_type,
+              media_id: item.media_id,
+              title: item.title,
+              thumbnail: item.thumbnail,
+              duration: item.duration,
+              embed_url: item.embed_url,
+              original_url: item.original_url
+            }
+          end)
+          
+          room_user = Accounts.user_to_room_user(user)
+          
+          case RoomServer.add_multiple_to_queue(socket.assigns.room.id, media_items, room_user) do
+            {:ok, count} ->
+              {:noreply, socket
+                |> assign(:show_playlist_modal, false)
+                |> put_flash(:info, "Loaded #{count} tracks from '#{playlist.name}'")}
+            {:error, _} ->
+              {:noreply, put_flash(socket, :error, "Failed to load playlist")}
+          end
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("load_main_playlist", _params, socket) do
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
+    else
+      case socket.assigns.main_playlist do
+        nil ->
+          {:noreply, put_flash(socket, :error, "No main playlist set")}
+        playlist when playlist.items == [] ->
+          {:noreply, put_flash(socket, :error, "Your main playlist is empty")}
+        playlist ->
+          media_items = Enum.map(playlist.items, fn item ->
+            %{
+              type: item.media_type,
+              media_id: item.media_id,
+              title: item.title,
+              thumbnail: item.thumbnail,
+              duration: item.duration,
+              embed_url: item.embed_url,
+              original_url: item.original_url
+            }
+          end)
+          
+          room_user = Accounts.user_to_room_user(socket.assigns.current_user)
+          
+          case RoomServer.add_multiple_to_queue(socket.assigns.room.id, media_items, room_user) do
+            {:ok, count} ->
+              {:noreply, put_flash(socket, :info, "Loaded #{count} tracks from '#{playlist.name}'")}
+            {:error, _} ->
+              {:noreply, put_flash(socket, :error, "Failed to load playlist")}
+          end
+      end
+    end
   end
 
   @impl true
@@ -513,10 +831,6 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       String.contains?(String.downcase(url), "soundcloud.com") ->
         Logger.debug("Attempting to parse as SoundCloud...")
         extract_soundcloud_data(url)
-      
-      String.contains?(String.downcase(url), "bandcamp.com") ->
-        Logger.debug("Attempting to parse as Bandcamp...")
-        extract_bandcamp_data(url)
       
       String.match?(url, ~r/^[A-Za-z0-9_-]{11}$/) ->
         Logger.debug("Detected as direct YouTube ID")
@@ -689,32 +1003,6 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   defp generate_soundcloud_thumbnail do
     # Return a data URI with an SVG SoundCloud logo on gradient background
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 180' fill='none'%3E%3Crect width='320' height='180' fill='url(%23gradient)'/%3E%3Cg transform='translate(160, 90)'%3E%3Cpath d='M-60 -20 Q-60 -30, -50 -30 L50 -30 Q60 -30, 60 -20 L60 20 Q60 30, 50 30 L-50 30 Q-60 30, -60 20 Z' fill='white' fill-opacity='0.2'/%3E%3Cpath d='M-30 -5v20h4V-12c-1.2-0.8-2.8-1.2-4-2zm-8 10v8h4V-8c-1.6 0.4-2.8 1.2-4 2zm16 0v10h4V-10c-1.2-0.8-2.8-1.6-4-2zm8 2v8h4V-8c-1.2-0.4-2.8-0.8-4-1.2zm8 2v6h4v-6c-1.2-0.4-2.8-0.4-4-0.8zm8 2V15h4V-5c-1.2 0-2.8 0-4 0zm8 0V15h4c0-2-1.6-3.6-4-5z' fill='white'/%3E%3C/g%3E%3Cdefs%3E%3ClinearGradient id='gradient' x1='0' y1='0' x2='320' y2='180'%3E%3Cstop offset='0%25' stop-color='%23ff5500'/%3E%3Cstop offset='100%25' stop-color='%23ff8800'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E"
-  end
-
-  defp extract_bandcamp_data(url) do
-    Logger.info("=== EXTRACTING BANDCAMP DATA ===")
-    Logger.info("Input URL: #{url}")
-    
-    alias YoutubeVideoChatApp.Bandcamp
-    
-    case Bandcamp.fetch_track_info(url) do
-      {:ok, info} ->
-        Logger.info("Bandcamp parse success: #{info.title}")
-        
-        %{
-          "type" => "bandcamp",
-          "media_id" => info.id,
-          "title" => "#{info.title} by #{info.artist}",
-          "thumbnail" => info.artwork,
-          "duration" => info.duration,
-          "embed_url" => info.embed_url,
-          "original_url" => info.original_url
-        }
-      
-      {:error, reason} ->
-        Logger.error("Bandcamp parse failed: #{inspect(reason)}")
-        nil
-    end
   end
 
   # Enhanced linkify_text function with image support

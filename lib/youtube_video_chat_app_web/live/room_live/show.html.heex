@@ -9,14 +9,244 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
         <p class="text-white text-xl mb-2">No media playing</p>
-        <p class="text-gray-400 text-sm">Add a YouTube, SoundCloud, or Bandcamp track to get started</p>
+        <p class="text-gray-400 text-sm">Add a YouTube or SoundCloud track to get started</p>
       </div>
     </div>
   </div>
   
+  <!-- Playlist Modal -->
+  <%= if @show_playlist_modal do %>
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div class="bg-gray-900 border border-purple-500/30 rounded-2xl w-full max-w-lg mx-4 shadow-2xl flex flex-col" style="max-height: calc(100vh - 100px);">
+        <!-- Modal Header -->
+        <div class="p-4 border-b border-gray-700 flex items-center justify-between">
+          <%= if @playlist_modal_view == :list do %>
+            <h2 class="text-xl font-bold text-white">My Playlists</h2>
+          <% else %>
+            <div class="flex items-center gap-2">
+              <button phx-click="playlist_back_to_list" class="text-gray-400 hover:text-white transition">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <h2 class="text-xl font-bold text-white">
+                <%= if @playlist_modal_view == :new, do: "New Playlist", else: @selected_playlist && @selected_playlist.name %>
+              </h2>
+            </div>
+          <% end %>
+          <button phx-click="close_playlist_modal" class="text-gray-400 hover:text-white transition">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        
+        <!-- Modal Content -->
+        <div class="flex-1 overflow-y-auto p-4 min-h-0">
+          <%= case @playlist_modal_view do %>
+            <% :list -> %>
+              <!-- Playlist List View -->
+              <%= if Enum.empty?(@user_playlists) do %>
+                <div class="text-center py-8">
+                  <div class="text-4xl mb-3">🎵</div>
+                  <p class="text-gray-400 mb-4">No playlists yet</p>
+                  <button
+                    phx-click="playlist_show_new_form"
+                    class="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-semibold rounded-lg transition"
+                  >
+                    Create Your First Playlist
+                  </button>
+                </div>
+              <% else %>
+                <div class="space-y-2 mb-4">
+                  <%= for playlist <- @user_playlists do %>
+                    <div class={"flex items-center gap-3 p-3 rounded-lg border transition cursor-pointer hover:bg-white/5 #{if playlist.is_main, do: "border-yellow-500/50 bg-yellow-500/5", else: "border-gray-700"}"}
+                         phx-click="playlist_view" phx-value-id={playlist.id}>
+                      <div class="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-lg flex items-center justify-center text-lg shrink-0">
+                        <%= if playlist.is_main, do: "⭐", else: "🎶" %>
+                      </div>
+                      <div class="flex-1 min-w-0">
+                        <h4 class="text-white font-medium truncate"><%= playlist.name %></h4>
+                        <p class="text-gray-500 text-sm"><%= playlist.item_count %> tracks</p>
+                      </div>
+                      <button
+                        phx-click="load_playlist_to_queue"
+                        phx-value-id={playlist.id}
+                        class="px-3 py-1.5 bg-purple-600/50 hover:bg-purple-600 text-white text-sm rounded-lg transition"
+                        title="Load to queue"
+                      >
+                        ▶ Play
+                      </button>
+                    </div>
+                  <% end %>
+                </div>
+                <button
+                  phx-click="playlist_show_new_form"
+                  class="w-full px-4 py-3 border-2 border-dashed border-gray-600 hover:border-purple-500 text-gray-400 hover:text-purple-400 rounded-lg transition flex items-center justify-center gap-2"
+                >
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                  </svg>
+                  Create New Playlist
+                </button>
+              <% end %>
+            
+            <% :new -> %>
+              <!-- New Playlist Form -->
+              <form phx-submit="playlist_create" class="space-y-4">
+                <div>
+                  <label class="block text-gray-300 text-sm mb-2">Playlist Name</label>
+                  <input
+                    type="text"
+                    name="name"
+                    placeholder="My Awesome Playlist"
+                    class="w-full px-4 py-3 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-purple-500"
+                    required
+                    autofocus
+                  />
+                </div>
+                <button
+                  type="submit"
+                  class="w-full px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-semibold rounded-lg transition"
+                >
+                  Create Playlist
+                </button>
+              </form>
+            
+            <% :show -> %>
+              <!-- Playlist Detail View -->
+              <%= if @selected_playlist do %>
+                <!-- Actions -->
+                <div class="flex gap-2 mb-4">
+                  <%= if @selected_playlist.is_main do %>
+                    <button
+                      phx-click="playlist_unset_main"
+                      phx-value-id={@selected_playlist.id}
+                      class="flex-1 px-3 py-2 bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded-lg text-sm transition"
+                    >
+                      ⭐ Unset as Main
+                    </button>
+                  <% else %>
+                    <button
+                      phx-click="playlist_set_main"
+                      phx-value-id={@selected_playlist.id}
+                      class="flex-1 px-3 py-2 bg-gray-700 text-gray-300 hover:bg-gray-600 rounded-lg text-sm transition"
+                    >
+                      ☆ Set as Main
+                    </button>
+                  <% end %>
+                  <button
+                    phx-click="load_playlist_to_queue"
+                    phx-value-id={@selected_playlist.id}
+                    class="flex-1 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm transition"
+                  >
+                    ▶ Load to Queue
+                  </button>
+                  <button
+                    phx-click="playlist_delete"
+                    phx-value-id={@selected_playlist.id}
+                    data-confirm="Delete this playlist?"
+                    class="px-3 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm transition"
+                  >
+                    🗑
+                  </button>
+                </div>
+                
+                <!-- Add Track Form -->
+                <form phx-submit="playlist_add_track" class="mb-4">
+                  <div class="flex gap-2">
+                    <input
+                      type="text"
+                      name="url"
+                      placeholder="Paste YouTube or SoundCloud URL..."
+                      class="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500"
+                      required
+                    />
+                    <button
+                      type="submit"
+                      class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm transition"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </form>
+                
+                <!-- Track List -->
+                <%= if Enum.empty?(@selected_playlist.items) do %>
+                  <div class="text-center py-8">
+                    <p class="text-gray-500">No tracks yet. Add some above!</p>
+                  </div>
+                <% else %>
+                  <div class="space-y-2">
+                    <%= for {item, index} <- Enum.with_index(@selected_playlist.items) do %>
+                      <div class="flex items-center gap-2 p-2 bg-gray-800/50 rounded-lg group">
+                        <span class="text-gray-500 text-xs w-5 text-center"><%= index + 1 %></span>
+                        <div class="w-10 h-8 rounded overflow-hidden bg-gray-700 shrink-0">
+                          <%= if item.thumbnail do %>
+                            <img src={item.thumbnail} alt="" class="w-full h-full object-cover" />
+                          <% else %>
+                            <div class={"w-full h-full flex items-center justify-center text-sm #{if item.media_type == "soundcloud", do: "bg-orange-900", else: "bg-red-900"}"}>
+                              <%= if item.media_type == "youtube", do: "▶️", else: "🎵" %>
+                            </div>
+                          <% end %>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-white text-sm truncate"><%= item.title %></p>
+                        </div>
+                        <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                          <button
+                            phx-click="playlist_move_track_up"
+                            phx-value-id={item.id}
+                            disabled={index == 0}
+                            class={"p-1 rounded hover:bg-gray-700 text-gray-400 #{if index == 0, do: "opacity-30", else: "hover:text-white"}"}
+                          >
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                            </svg>
+                          </button>
+                          <button
+                            phx-click="playlist_move_track_down"
+                            phx-value-id={item.id}
+                            disabled={index == length(@selected_playlist.items) - 1}
+                            class={"p-1 rounded hover:bg-gray-700 text-gray-400 #{if index == length(@selected_playlist.items) - 1, do: "opacity-30", else: "hover:text-white"}"}
+                          >
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                          <button
+                            phx-click="playlist_remove_track"
+                            phx-value-id={item.id}
+                            class="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400"
+                          >
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    <% end %>
+                  </div>
+                <% end %>
+              <% end %>
+          <% end %>
+        </div>
+        
+        <!-- Info Footer -->
+        <%= if @playlist_modal_view == :list do %>
+          <div class="p-4 border-t border-gray-700 bg-purple-900/20">
+            <p class="text-gray-400 text-sm text-center">
+              ⭐ Set a main playlist to quickly load it with one click
+            </p>
+          </div>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+  
   <!-- Login Prompt Modal -->
   <%= if @show_login_prompt do %>
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div class="bg-gray-900 border border-purple-500/30 rounded-2xl p-8 max-w-md mx-4 shadow-2xl">
         <div class="text-center">
           <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-purple-500/20 flex items-center justify-center">
@@ -92,6 +322,16 @@
               Log In
             </.link>
           <% else %>
+            <%= if @room.host_id == @current_user.id do %>
+              <button
+                phx-click="delete_room"
+                data-confirm="Are you sure you want to delete this room? Everyone will be disconnected and this cannot be undone."
+                class="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm rounded-full transition"
+                title="Delete this room"
+              >
+                Delete Room
+              </button>
+            <% end %>
             <.link
               href={~p"/logout"}
               method="delete"
@@ -141,11 +381,12 @@
     <!-- Side Panel: Queue (Right Side) -->
     <div 
       :if={@show_queue}
-      class="absolute top-20 right-4 bottom-32 w-96 pointer-events-auto"
+      class="absolute top-20 right-4 w-96 pointer-events-auto flex flex-col z-50"
+      style="bottom: 120px;"
     >
-      <div class="bg-black/80 backdrop-blur-md rounded-2xl p-4 h-full flex flex-col">
-        <!-- Header -->
-        <div class="flex items-center justify-between mb-4">
+      <div class="bg-black/80 backdrop-blur-md rounded-2xl p-4 flex-1 flex flex-col overflow-hidden">
+        <!-- Header - fixed -->
+        <div class="flex items-center justify-between mb-4 shrink-0">
           <h3 class="text-white font-semibold text-lg">Playlist</h3>
           <div class="flex items-center gap-2">
             <span class="text-xs text-gray-400">
@@ -163,22 +404,22 @@
           </div>
         </div>
         
-        <!-- Add Media Form - Only for registered users -->
+        <!-- Add Media Form - Only for registered users - fixed -->
         <%= if @is_guest do %>
-          <div class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+          <div class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg shrink-0">
             <p class="text-yellow-400 text-sm text-center">
               <.link navigate={~p"/login"} class="underline hover:text-yellow-300">Log in</.link> 
               to add videos and tracks
             </p>
           </div>
         <% else %>
-          <form phx-submit="add_video" class="mb-4">
+          <form phx-submit="add_video" class="mb-3 shrink-0">
             <div class="relative">
               <input
                 type="text"
                 name="url"
                 value={@add_video_url}
-                placeholder="Paste YouTube, SoundCloud, or Bandcamp URL..."
+                placeholder="Paste YouTube or SoundCloud URL..."
                 class="w-full px-4 py-2.5 bg-white/10 text-white text-sm rounded-lg border border-white/20 focus:border-purple-500 focus:outline-none placeholder-gray-400 pr-10"
               />
               <button
@@ -192,10 +433,41 @@
               </button>
             </div>
           </form>
+          
+          <!-- Load Playlist Buttons - fixed -->
+          <div class="flex gap-2 mb-4 shrink-0">
+            <%= if @main_playlist && length(@main_playlist.items) > 0 do %>
+              <button
+                phx-click="load_main_playlist"
+                class="flex-1 px-3 py-2 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 hover:from-yellow-500/30 hover:to-orange-500/30 border border-yellow-500/30 text-yellow-400 text-sm rounded-lg transition flex items-center justify-center gap-2"
+                title={"Load #{@main_playlist.name} (#{length(@main_playlist.items)} tracks)"}
+              >
+                <span>⭐</span>
+                <span class="truncate">Load <%= @main_playlist.name %></span>
+              </button>
+            <% else %>
+              <button
+                phx-click="open_playlist_modal"
+                class="flex-1 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-400 text-sm rounded-lg transition flex items-center justify-center gap-2"
+              >
+                <span>🎵</span>
+                <span>Create Playlist</span>
+              </button>
+            <% end %>
+            <button
+              phx-click="open_playlist_modal"
+              class="px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-400 text-sm rounded-lg transition"
+              title="Manage playlists"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+              </svg>
+            </button>
+          </div>
         <% end %>
         
-        <!-- Playlist Content -->
-        <div class="flex-1 overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-white/20">
+        <!-- Playlist Content - scrollable -->
+        <div class="flex-1 overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-white/20" style="min-height: 0;">
           <!-- Now Playing Section -->
           <%= if @current_media do %>
             <div class="mb-4">
@@ -344,12 +616,12 @@
       <!-- Scrollable Chat History -->
       <div 
         :if={@show_chat}
-        class="relative h-48 pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20"
+        class="relative h-72 pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20"
         id="chat-history"
         phx-hook="ChatScroll"
-        style="margin-bottom: 45px; padding-left: 1rem;"
+        style="margin-bottom: 45px; padding-left: 1rem; margin-right: 0;"
       >
-        <div class="space-y-1" id="messages-container" style={if @show_queue, do: "margin-right: 416px;", else: "margin-right: 0;"}>
+        <div class="space-y-1" id="messages-container">
           <%= for message <- Enum.reverse(@messages) do %>
             <div class="flex items-start gap-2 text-sm max-w-2xl">
               <span class="font-bold shrink-0" style={"color: #{message.color}; text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"} >
