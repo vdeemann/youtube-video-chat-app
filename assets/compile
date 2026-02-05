@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Script to compile assets for production
+
+set -e
+
+# Install Node dependencies
+cd assets
+npm install
+cd ..
+
+# Compile assets
+mix assets.deploy

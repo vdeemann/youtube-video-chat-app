@@ -1,0 +1,38 @@
+databases:
+  - name: youtube-video-chat-db
+    databaseName: youtube_video_chat_app
+    user: youtube_video_chat_app
+    plan: free
+    region: oregon
+
+services:
+  - type: web
+    name: youtube-video-chat-app
+    runtime: elixir
+    plan: free
+    region: oregon
+    buildCommand: |
+      mix deps.get --only prod
+      MIX_ENV=prod mix compile
+      npm install --prefix ./assets
+      MIX_ENV=prod mix assets.deploy
+      MIX_ENV=prod mix phx.digest
+    startCommand: MIX_ENV=prod mix phx.server
+    envVars:
+      - key: MIX_ENV
+        value: prod
+      - key: SECRET_KEY_BASE
+        generateValue: true
+      - key: PHX_HOST
+        fromService:
+          type: web
+          name: youtube-video-chat-app
+          property: host
+      - key: DATABASE_URL
+        fromDatabase:
+          name: youtube-video-chat-db
+          property: connectionString
+      - key: POOL_SIZE
+        value: 5
+      - key: PORT
+        value: 10000

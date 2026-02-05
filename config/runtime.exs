@@ -30,7 +30,7 @@ if config_env() == :prod do
       """
 
   host = System.get_env("PHX_HOST") || "example.com"
-  port = String.to_integer(System.get_env("PORT") || "4000")
+  port = String.to_integer(System.get_env("PORT") || "10000")
 
   config :youtube_video_chat_app, YoutubeVideoChatAppWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
@@ -38,7 +38,8 @@ if config_env() == :prod do
       ip: {0, 0, 0, 0, 0, 0, 0, 0},
       port: port
     ],
-    secret_key_base: secret_key_base
+    secret_key_base: secret_key_base,
+    server: true
 
   # ## SSL Support
   #
