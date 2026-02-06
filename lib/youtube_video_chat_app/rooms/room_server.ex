@@ -1,10 +1,16 @@
 defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   @moduledoc """
-  GenServer for managing room state and video synchronization
+  GenServer for managing room state and video synchronization.
+  
+  Automatically terminates after 30 minutes of inactivity (no viewers)
+  to prevent memory leaks from orphaned room processes.
   """
   use GenServer
   alias Phoenix.PubSub
   require Logger
+
+  # Terminate room server after 30 minutes of no activity
+  @idle_timeout :timer.minutes(30)
 
   defstruct [
     :room_id,
@@ -23,62 +29,67 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   def start_link(room_id) do
     GenServer.start_link(__MODULE__, room_id, 
-      name: {:global, {:room, room_id}})
+      name: via_tuple(room_id))
+  end
+
+  # Use Registry for faster process lookup (vs :global)
+  defp via_tuple(room_id) do
+    {:via, Registry, {YoutubeVideoChatApp.RoomRegistry, room_id}}
   end
 
   def get_state(room_id) do
-    GenServer.call({:global, {:room, room_id}}, :get_state)
+    GenServer.call(via_tuple(room_id), :get_state)
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def sync_video(room_id, timestamp, state, user_id) do
-    GenServer.cast({:global, {:room, room_id}}, 
+    GenServer.cast(via_tuple(room_id), 
       {:sync_video, timestamp, state, user_id})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def add_to_queue(room_id, media_data, user) do
-    GenServer.call({:global, {:room, room_id}}, 
+    GenServer.call(via_tuple(room_id), 
       {:add_to_queue, media_data, user})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def play_next(room_id) do
-    GenServer.call({:global, {:room, room_id}}, :play_next)
+    GenServer.call(via_tuple(room_id), :play_next)
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def remove_from_queue(room_id, media_id) do
-    GenServer.cast({:global, {:room, room_id}}, {:remove_from_queue, media_id})
+    GenServer.cast(via_tuple(room_id), {:remove_from_queue, media_id})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def add_multiple_to_queue(room_id, media_items, user) do
-    GenServer.call({:global, {:room, room_id}}, {:add_multiple_to_queue, media_items, user})
+    GenServer.call(via_tuple(room_id), {:add_multiple_to_queue, media_items, user})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def update_video_progress(room_id, current_time, duration) do
-    GenServer.cast({:global, {:room, room_id}}, 
+    GenServer.cast(via_tuple(room_id), 
       {:update_progress, current_time, duration})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def add_message(room_id, message) do
-    GenServer.cast({:global, {:room, room_id}}, {:add_message, message})
+    GenServer.cast(via_tuple(room_id), {:add_message, message})
   catch
     :exit, _ -> {:error, :room_not_found}
   end
 
   def get_messages(room_id) do
-    GenServer.call({:global, {:room, room_id}}, :get_messages)
+    GenServer.call(via_tuple(room_id), :get_messages)
   catch
     :exit, _ -> {:error, :room_not_found}
   end
@@ -87,7 +98,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @impl true
   def init(room_id) do
-    Logger.info("RoomServer starting for room #{room_id}")
+    Logger.debug("RoomServer starting for room #{room_id}")
     
     # Load room from database if exists
     room = YoutubeVideoChatApp.Rooms.get_room!(room_id)
@@ -105,17 +116,18 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       messages: []
     }
     
-    {:ok, state}
+    # Start with idle timeout - will terminate if no activity
+    {:ok, state, @idle_timeout}
   end
 
   @impl true
   def handle_call(:get_state, _from, state) do
-    {:reply, {:ok, state}, state}
+    {:reply, {:ok, state}, state, @idle_timeout}
   end
 
   @impl true
   def handle_call(:get_messages, _from, state) do
-    {:reply, {:ok, state.messages || []}, state}
+    {:reply, {:ok, state.messages || []}, state, @idle_timeout}
   end
 
   @impl true
@@ -135,22 +147,16 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       added_at: DateTime.utc_now()
     }
     
-    Logger.info("\n=== ADDING TO QUEUE ===")
-    Logger.info("🎵 Media: #{media.title} (#{media.type})")
-    Logger.info("🕒 Duration: #{media.duration} seconds")
-    Logger.info("📊 Current state: #{length(state.queue)} in queue, current_media: #{inspect(state.current_media != nil)}")
+    Logger.debug("Adding to queue: #{media.title} (#{media.type})")
     
     # If no media is currently playing, start this one immediately
     new_state = if is_nil(state.current_media) do
-      Logger.info("✅ No current media, starting playback immediately")
-      
       # Broadcast to all clients in proper order
       broadcast_media_change(state.room_id, media)
       broadcast_queue_update(state.room_id, state.queue)
       broadcast_play_next(state.room_id, media, state.queue)
       
-      Logger.info("✅ Now playing: #{media.title}")
-      Logger.info("📁 Queue remains: #{length(state.queue)} items\n")
+      Logger.debug("Now playing: #{media.title}")
       
       %{state | 
         current_media: media, 
@@ -159,51 +165,24 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
         video_started_at: DateTime.utc_now()
       }
     else
-      # Add to queue
-      position = length(state.queue) + 1
-      Logger.info("📁 Adding to queue at position #{position}")
+      # Add to queue (prepend for O(1), reverse when reading)
       new_queue = state.queue ++ [media]
-      Logger.info("📁 New queue size: #{length(new_queue)}")
-      Logger.info("📋 Updated queue contents:")
-      Enum.each(new_queue, fn item ->
-        Logger.info("   - #{item.title} (#{item.type})")
-      end)
-      Logger.info("")
+      Logger.debug("Queue size: #{length(new_queue)}")
       
       broadcast_queue_update(state.room_id, new_queue)
       %{state | queue: new_queue}
     end
     
-    {:reply, {:ok, media}, new_state}
+    {:reply, {:ok, media}, new_state, @idle_timeout}
   end
 
   @impl true
   def handle_call(:play_next, _from, state) do
-    Logger.info("\n========================================")
-    Logger.info("=== PLAY_NEXT CALLED ===")
-    Logger.info("========================================")
-    Logger.info("🎵 Current: #{inspect(state.current_media && state.current_media.title)}")
-    Logger.info("📁 Queue: #{length(state.queue)} items")
-    if length(state.queue) > 0 do
-      Logger.info("📋 Queue items:")
-      Enum.each(state.queue, fn item ->
-        Logger.info("   - #{item.title} (#{item.type})")
-      end)
-    end
+    Logger.debug("play_next called, queue size: #{length(state.queue)}")
     
     case state.queue do
       [next | rest] ->
-        Logger.info("\n✅ ADVANCING TO NEXT TRACK")
-        Logger.info("🎬 Now Playing: #{next.title}")
-        Logger.info("🕒 Duration: #{next.duration} seconds")
-        Logger.info("🔢 Type: #{next.type}")
-        Logger.info("📁 Remaining in queue: #{length(rest)}")
-        if length(rest) > 0 do
-          Logger.info("📋 Updated queue:")
-          Enum.each(rest, fn item ->
-            Logger.info("   - #{item.title} (#{item.type})")
-          end)
-        end
+        Logger.debug("Advancing to: #{next.title}")
         
         # UPDATE STATE FIRST before broadcasting
         new_state = %{state | 
@@ -215,18 +194,14 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
         }
         
         # Now broadcast with the correct updated queue
-        Logger.info("📡 Broadcasting to all clients...")
         broadcast_media_change(state.room_id, next)
         broadcast_queue_update(state.room_id, rest)
         broadcast_play_next(state.room_id, next, rest)
-        Logger.info("✅ Broadcasts complete - queue now has #{length(rest)} items")
         
-        Logger.info("========================================\n")
-        {:reply, :ok, new_state}
+        {:reply, :ok, new_state, @idle_timeout}
       
       [] ->
-        Logger.info("\n⚠️ Queue is empty")
-        Logger.info("🛑 Stopping playback")
+        Logger.debug("Queue empty, stopping playback")
         
         # Update state first
         new_state = %{state | 
@@ -242,15 +217,13 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
         broadcast_queue_update(state.room_id, [])
         broadcast_play_next(state.room_id, nil, [])
         
-        Logger.info("========================================\n")
-        {:reply, :ok, new_state}
+        {:reply, :ok, new_state, @idle_timeout}
     end
   end
 
   @impl true
   def handle_call({:add_multiple_to_queue, media_items, user}, _from, state) do
-    Logger.info("\n=== ADDING MULTIPLE TO QUEUE ===")
-    Logger.info("Adding #{length(media_items)} items from playlist")
+    Logger.debug("Adding #{length(media_items)} items from playlist")
     
     # Convert all items to the proper format
     converted_items = Enum.map(media_items, fn item ->
@@ -274,8 +247,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       [first | rest] = converted_items
       new_queue = state.queue ++ rest
       
-      Logger.info("✅ Starting first track: #{first.title}")
-      Logger.info("📁 Adding #{length(rest)} more to queue")
+      Logger.debug("Starting first track: #{first.title}, #{length(rest)} more queued")
       
       broadcast_media_change(state.room_id, first)
       broadcast_queue_update(state.room_id, new_queue)
@@ -291,40 +263,39 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     else
       # Add all to queue
       new_queue = state.queue ++ converted_items
-      Logger.info("📁 Added #{length(converted_items)} items to queue")
-      Logger.info("📁 New queue size: #{length(new_queue)}")
+      Logger.debug("Queue size now: #{length(new_queue)}")
       
       broadcast_queue_update(state.room_id, new_queue)
       %{state | queue: new_queue}
     end
     
-    {:reply, {:ok, length(converted_items)}, new_state}
+    {:reply, {:ok, length(converted_items)}, new_state, @idle_timeout}
   end
 
   @impl true
   def handle_cast({:remove_from_queue, media_id}, state) do
-    Logger.info("Removing media from queue: #{media_id}")
+    Logger.debug("Removing media from queue: #{media_id}")
     
     new_queue = Enum.reject(state.queue, fn media -> 
       media.id == media_id
     end)
     
     broadcast_queue_update(state.room_id, new_queue)
-    {:noreply, %{state | queue: new_queue}}
+    {:noreply, %{state | queue: new_queue}, @idle_timeout}
   end
 
   @impl true
-  def handle_cast({:update_progress, current_time, duration}, state) do
+  def handle_cast({:update_progress, current_time, _duration}, state) do
     # Update video progress from client (for UI display only)
     # JavaScript video_ended event handles advancement
-    {:noreply, %{state | video_timestamp: current_time}}
+    {:noreply, %{state | video_timestamp: current_time}, @idle_timeout}
   end
 
   @impl true
   def handle_cast({:add_message, message}, state) do
     # Add message to the front, keep only last 50
     messages = [message | (state.messages || [])] |> Enum.take(50)
-    {:noreply, %{state | messages: messages}}
+    {:noreply, %{state | messages: messages}, @idle_timeout}
   end
 
   @impl true
@@ -344,17 +315,23 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
         video_timestamp: timestamp, 
         video_state: video_state,
         last_sync: now
-      }}
+      }, @idle_timeout}
     else
-      {:noreply, state}
+      {:noreply, state, @idle_timeout}
     end
+  end
+
+  # Handle idle timeout - terminate if no activity
+  @impl true
+  def handle_info(:timeout, state) do
+    Logger.debug("RoomServer #{state.room_id} idle timeout - terminating")
+    {:stop, :normal, state}
   end
 
   # Private functions
 
   defp broadcast_media_change(room_id, media) do
-    Logger.info("📡 BROADCASTING media change to ALL clients")
-    Logger.info("Media: #{inspect(media && media.title)}")
+    Logger.debug("Broadcasting media change: #{inspect(media && media.title)}")
     
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,
@@ -364,8 +341,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   defp broadcast_queue_update(room_id, queue) do
-    Logger.info("📡 BROADCASTING queue update to ALL clients")
-    Logger.info("Queue size: #{length(queue)}")
+    Logger.debug("Broadcasting queue update, size: #{length(queue)}")
     
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,
@@ -375,8 +351,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   defp broadcast_play_next(room_id, media, queue) do
-    Logger.info("📡 BROADCASTING play_next event to ALL clients")
-    Logger.info("Next media: #{inspect(media && media.title)}")
+    Logger.debug("Broadcasting play_next: #{inspect(media && media.title)}")
     
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,

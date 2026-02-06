@@ -16,6 +16,8 @@ defmodule YoutubeVideoChatApp.Application do
       # {Finch, name: YoutubeVideoChatApp.Finch},
       # Start the Presence module
       YoutubeVideoChatAppWeb.Presence,
+      # Start the Registry for room servers (faster than :global)
+      {Registry, keys: :unique, name: YoutubeVideoChatApp.RoomRegistry},
       # Start the DynamicSupervisor for room servers
       {DynamicSupervisor, name: YoutubeVideoChatApp.RoomSupervisor, strategy: :one_for_one},
       # Start the Endpoint (http/https)
