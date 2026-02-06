@@ -649,7 +649,7 @@
               </span>
             </div>
           <% else %>
-            <form phx-submit="send_message" class="flex-1 flex gap-2">
+            <form phx-submit="send_message" phx-hook="ClearOnSubmit" id="chat-form" class="flex-1 flex gap-2">
               <input 
                 type="text"
                 name="message"

@@ -955,7 +955,21 @@ const VideoEndedPusher = {
   }
 };
 
-let Hooks = { ChatScroll, VideoEndedPusher };
+const ClearOnSubmit = {
+  mounted() {
+    this.el.addEventListener("submit", () => {
+      // Clear input after a tiny delay to let the form submit
+      setTimeout(() => {
+        const input = this.el.querySelector("input[type='text']");
+        if (input) {
+          input.value = "";
+        }
+      }, 10);
+    });
+  }
+};
+
+let Hooks = { ChatScroll, VideoEndedPusher, ClearOnSubmit };
 
 let liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},
