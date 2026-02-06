@@ -131,7 +131,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         media: media_for_js,
         timestamp: current_timestamp,
         started_at: room_state.video_started_at && DateTime.to_unix(room_state.video_started_at, :millisecond),
-        is_host: is_host
+        is_host: is_host,
+        is_new_track: false
       })
     else
       socket
@@ -739,7 +740,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
        |> push_event("create_player", %{
             media: media_for_js,
             started_at: started_at,
-            is_host: socket.assigns.is_host
+            is_host: socket.assigns.is_host,
+            is_new_track: true
           })}
     else
       Logger.info("Same track, just updating queue")

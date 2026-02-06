@@ -139,7 +139,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       media_id: media_data["media_id"] || media_data[:media_id],
       title: media_data["title"] || media_data[:title] || "Unknown",
       thumbnail: media_data["thumbnail"] || media_data[:thumbnail],
-      duration: media_data["duration"] || media_data[:duration] || 180,
+      duration: media_data["duration"] || media_data[:duration] || 300,
       embed_url: media_data["embed_url"] || media_data[:embed_url],
       original_url: media_data["original_url"] || media_data[:original_url],
       added_by_username: user.username,

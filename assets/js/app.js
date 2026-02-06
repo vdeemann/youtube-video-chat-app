@@ -27,31 +27,61 @@ window.playerState = {
 // ===========================================
 // VOLUME CONTROL
 // ===========================================
+// Debounced save to localStorage (avoid writing on every pixel of slider movement)
+let _volumeSaveTimeout = null;
+function _debouncedSaveVolume(volume) {
+  if (_volumeSaveTimeout) clearTimeout(_volumeSaveTimeout);
+  _volumeSaveTimeout = setTimeout(() => {
+    localStorage.setItem('playerVolume', volume.toString());
+  }, 150);
+}
+
+// Throttled player volume application (avoid hammering player APIs on every input event)
+let _volumeApplyTimeout = null;
+let _pendingVolume = null;
+function _throttledApplyVolume(volume) {
+  _pendingVolume = volume;
+  if (!_volumeApplyTimeout) {
+    _volumeApplyTimeout = setTimeout(() => {
+      applyVolumeToPlayer(_pendingVolume);
+      _volumeApplyTimeout = null;
+    }, 50);
+  }
+}
+
 window.setPlayerVolume = function(value) {
   const volume = Math.max(0, Math.min(100, parseInt(value, 10)));
   window.playerState.volume = volume;
-  localStorage.setItem('playerVolume', volume.toString());
   
-  // Update the volume slider UI
-  const slider = document.getElementById('volume-slider');
-  if (slider) slider.value = volume;
-  
+  // Lightweight UI updates (no innerHTML thrashing)
   const volumeValue = document.getElementById('volume-value');
   if (volumeValue) volumeValue.textContent = volume + '%';
   
-  const volumeIcon = document.getElementById('volume-icon');
-  if (volumeIcon) {
-    if (volume === 0) {
-      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
-    } else if (volume < 50) {
-      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
-    } else {
-      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+  // Only update icon when crossing a threshold (0, 50) to avoid constant innerHTML rewrites
+  const prevVolume = window.playerState._prevIconVolume || -1;
+  const iconChanged = (volume === 0) !== (prevVolume === 0) || 
+                      (volume > 0 && volume < 50) !== (prevVolume > 0 && prevVolume < 50) ||
+                      (volume >= 50) !== (prevVolume >= 50);
+  
+  if (iconChanged) {
+    const volumeIcon = document.getElementById('volume-icon');
+    if (volumeIcon) {
+      if (volume === 0) {
+        volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
+      } else if (volume < 50) {
+        volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+      } else {
+        volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+      }
     }
+    window.playerState._prevIconVolume = volume;
   }
   
-  // Apply to current player
-  applyVolumeToPlayer(volume);
+  // Debounce localStorage write
+  _debouncedSaveVolume(volume);
+  
+  // Throttle player API calls
+  _throttledApplyVolume(volume);
 };
 
 function applyVolumeToPlayer(volume) {
@@ -59,31 +89,16 @@ function applyVolumeToPlayer(volume) {
   if (window.playerState.ytPlayer && typeof window.playerState.ytPlayer.setVolume === 'function') {
     try {
       window.playerState.ytPlayer.setVolume(volume);
-      console.log('[Volume] Set YouTube volume to:', volume);
-    } catch (e) {
-      console.warn('[Volume] Failed to set YouTube volume:', e);
-    }
+    } catch (e) { /* player not ready */ }
   }
   
   // SoundCloud
   if (window.scWidget && typeof window.scWidget.setVolume === 'function') {
     try {
       window.scWidget.setVolume(volume);
-      console.log('[Volume] Set SoundCloud volume to:', volume);
-    } catch (e) {
-      console.warn('[Volume] Failed to set SoundCloud volume:', e);
-    }
+    } catch (e) { /* widget not ready */ }
   }
   
-  // Bandcamp HTML5 audio
-  if (window.playerState.bandcampAudio) {
-    try {
-      window.playerState.bandcampAudio.volume = volume / 100;
-      console.log('[Volume] Set Bandcamp audio volume to:', volume / 100);
-    } catch (e) {
-      console.warn('[Volume] Failed to set Bandcamp volume:', e);
-    }
-  }
 }
 
 // Toggle mute
@@ -113,58 +128,6 @@ document.addEventListener('click', (e) => {
     popup.classList.add('hidden');
   }
 });
-
-// ===========================================
-// BANDCAMP TIMER START
-// Called when host clicks "Start Timer" button after they've started playback
-// ===========================================
-window.startBandcampTimer = function() {
-  console.log("[Bandcamp] User clicked start timer button");
-  
-  // Update the button to show it was clicked
-  const btn = document.getElementById('bandcamp-start-btn');
-  if (btn) {
-    btn.innerHTML = '✅ Timer Running!';
-    btn.disabled = true;
-    btn.classList.remove('from-green-500', 'to-teal-500', 'hover:from-green-600', 'hover:to-teal-600');
-    btn.classList.add('from-gray-500', 'to-gray-600', 'cursor-not-allowed');
-  }
-  
-  // Start the server-side timer
-  pushBandcampStarted();
-};
-
-// Alias for backward compatibility
-window.startBandcampPlayback = window.startBandcampTimer;
-
-function pushBandcampStarted() {
-  console.log("[Bandcamp] Pushing bandcamp_started event to server");
-  
-  // Method 1: Try using the hook's pushEvent
-  const hookEl = document.getElementById('room-container');
-  if (hookEl && hookEl._phxHookPushEvent) {
-    console.log("[Bandcamp] Using hook pushEvent method");
-    hookEl._phxHookPushEvent("bandcamp_started", {});
-    return;
-  }
-  
-  // Method 2: Find the LiveView and push directly
-  if (window.liveSocket) {
-    const view = document.querySelector('[data-phx-main]');
-    if (view) {
-      const viewInstance = window.liveSocket.getViewByEl(view);
-      if (viewInstance) {
-        console.log("[Bandcamp] Using LiveView pushEvent method");
-        viewInstance.pushEvent("bandcamp_started", {}, () => {
-          console.log("[Bandcamp] bandcamp_started event pushed successfully");
-        });
-        return;
-      }
-    }
-  }
-  
-  console.error("[Bandcamp] Could not push bandcamp_started event");
-}
 
 // ===========================================
 // LOAD YOUTUBE IFRAME API
@@ -206,37 +169,29 @@ loadYouTubeAPI();
 // CREATE PLAYER
 // Called when: 1) joining room with active track, 2) new track starts
 // ===========================================
-function createPlayer(media, serverStartedAt, isHost) {
+function createPlayer(media, serverStartedAt, isHost, isNewTrack) {
   if (!media) {
     console.log("[Player] No media, showing placeholder");
     showPlaceholder();
     return;
   }
   
-  console.log("[Player] Creating player:", media.title, "isHost:", isHost);
+  console.log("[Player] Creating player:", media.title, "isHost:", isHost, "isNewTrack:", isNewTrack);
   
   const container = document.getElementById('media-container');
   if (!container) return;
   
-  // Calculate current position based on server start time
-  // For hosts starting a new track, always start from the beginning
-  // Only calculate elapsed time for viewers joining mid-playback
   const now = Date.now();
   let elapsed = 0;
-  let isNewTrack = true; // Assume new track unless we determine otherwise
   
-  if (serverStartedAt) {
-    const rawElapsed = Math.floor((now - serverStartedAt) / 1000);
-    // Only apply elapsed time if it's significant (> 10 seconds)
-    // This prevents skipping the beginning due to network latency
-    // when a host starts a new track. Use a generous threshold.
-    if (rawElapsed > 10) {
-      elapsed = rawElapsed;
-      isNewTrack = false;
-      console.log(`[Player] Joining mid-playback, seeking to: ${elapsed}s`);
-    } else {
-      console.log(`[Player] Starting fresh (elapsed ${rawElapsed}s is within new track threshold)`);
-    }
+  if (isNewTrack) {
+    // New track starting - always begin from 0, no elapsed time calculation
+    elapsed = 0;
+    console.log(`[Player] New track - starting from beginning`);
+  } else if (serverStartedAt) {
+    // Joining mid-playback - calculate where we should be
+    elapsed = Math.max(0, Math.floor((now - serverStartedAt) / 1000));
+    console.log(`[Player] Joining mid-playback, seeking to: ${elapsed}s`);
   }
   
   console.log(`[Player] Server started at: ${serverStartedAt}, final start position: ${elapsed}s, isNewTrack: ${isNewTrack}`);
@@ -264,6 +219,7 @@ function createPlayer(media, serverStartedAt, isHost) {
     endTriggered: false,
     ytPlayer: null,
     isNewTrack: isNewTrack,
+    _playbackAnchored: false, // Will be set true when actual playback begins
     volume: savedVolume,
     previousVolume: window.playerState.previousVolume || savedVolume
   };
@@ -316,242 +272,23 @@ function createPlayer(media, serverStartedAt, isHost) {
     
     container.innerHTML = playerHtml;
     
-    // Setup SoundCloud player after it loads
-    setTimeout(() => initSoundCloud(elapsed, isHost), 1000);
-    
-  } else if (media.type === "bandcamp") {
-    // Bandcamp - use HTML5 audio player if stream_url is available (supports autoplay!)
-    // Fall back to iframe embed if no stream_url
-    const uniqueId = `${now}_${Math.random().toString(36).substr(2, 9)}`;
-    const hasStreamUrl = media.stream_url && media.stream_url.length > 0;
-    
-    console.log("[Bandcamp] Has stream URL:", hasStreamUrl);
-    
-    if (hasStreamUrl) {
-      // Use HTML5 audio player with the direct stream URL - this supports autoplay!
-      playerHtml = `
-        <div class="relative w-full h-full bg-gradient-to-br from-cyan-900 via-teal-900 to-blue-900" id="player-host">
-          <div class="absolute inset-0 flex items-center justify-center">
-            <div class="w-full max-w-4xl px-8">
-              <div class="text-center mb-6">
-                <h2 class="text-white text-2xl font-bold mb-2">${media.title || 'Bandcamp Track'}</h2>
-                <p class="text-cyan-300/70 text-sm">Bandcamp • Streaming</p>
-              </div>
-              
-              <!-- Album art / visualizer area -->
-              <div class="relative mx-auto mb-6" style="max-width: 400px;">
-                <div class="aspect-square bg-gradient-to-br from-cyan-800 to-teal-900 rounded-2xl shadow-2xl flex items-center justify-center overflow-hidden">
-                  ${media.thumbnail && !media.thumbnail.startsWith('data:') ? 
-                    `<img src="${media.thumbnail}" alt="Album art" class="w-full h-full object-cover" onerror="this.style.display='none'"/>` :
-                    `<div class="text-8xl">🎵</div>`
-                  }
-                  <!-- Audio visualizer overlay -->
-                  <div id="bandcamp-visualizer" class="absolute inset-0 flex items-end justify-center gap-1 p-8 opacity-50">
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 20%; animation-delay: 0s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 40%; animation-delay: 0.1s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 60%; animation-delay: 0.2s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 35%; animation-delay: 0.3s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 80%; animation-delay: 0.4s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 50%; animation-delay: 0.5s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 70%; animation-delay: 0.6s;"></div>
-                    <div class="w-2 bg-cyan-400 rounded-full animate-pulse" style="height: 45%; animation-delay: 0.7s;"></div>
-                  </div>
-                </div>
-              </div>
-              
-              <!-- HTML5 Audio player -->
-              <div class="bg-black/30 rounded-xl p-4">
-                <audio 
-                  id="bandcamp-audio"
-                  src="${media.stream_url}"
-                  autoplay
-                  preload="auto"
-                  class="w-full"
-                  style="height: 40px;"
-                  controls
-                ></audio>
-              </div>
-              
-              <!-- Progress info -->
-              <div class="text-center mt-4">
-                <p class="text-cyan-200/60 text-sm">🎧 Streaming with autoplay • Synced playback</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-      
-      container.innerHTML = playerHtml;
-      
-      // Initialize Bandcamp HTML5 audio player
-      initBandcampAudio(elapsed, isHost, media.duration || 180);
-      
-    } else {
-      // Fallback to iframe embed (no autoplay)
-      playerHtml = `
-        <div class="relative w-full h-full bg-gradient-to-br from-cyan-900 via-teal-900 to-blue-900" id="player-host">
-          <div class="absolute inset-0 flex items-center justify-center">
-            <div class="w-full max-w-4xl px-8">
-              <div class="text-center mb-6">
-                <h2 class="text-white text-2xl font-bold mb-2">${media.title || 'Bandcamp Track'}</h2>
-                <p class="text-white/70 text-sm">Bandcamp</p>
-              </div>
-              
-              <!-- Bandcamp iframe - always visible -->
-              <div id="bandcamp-container" class="relative" style="height: 120px;">
-                <iframe
-                  id="bandcamp-player"
-                  name="bc-player-${uniqueId}"
-                  src="${media.embed_url}"
-                  style="border: 0; width: 100%; height: 100%;"
-                  seamless
-                  allow="autoplay"
-                ></iframe>
-              </div>
-              
-              <!-- Instructions -->
-              <div class="text-center mt-6">
-                <p class="text-yellow-300 text-lg font-semibold mb-4 animate-pulse">
-                  👆 Click the play button above to start
-                </p>
-                
-                ${isHost ? `
-                  <p class="text-white/60 text-sm mb-3">Then click below to start the auto-advance timer:</p>
-                  <button 
-                    id="bandcamp-start-btn"
-                    onclick="window.startBandcampTimer()"
-                    class="px-6 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-bold rounded-full transition transform hover:scale-105 shadow-xl"
-                  >
-                    ⏱️ Start Timer (${Math.floor((media.duration || 180) / 60)}:${String((media.duration || 180) % 60).padStart(2, '0')})
-                  </button>
-                  <p class="text-white/40 text-xs mt-2">Timer auto-advances to next track when complete</p>
-                ` : `
-                  <p class="text-white/50 text-sm">Host will start the timer after playing</p>
-                `}
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-      
-      container.innerHTML = playerHtml;
-      
-      console.log("[Bandcamp] Iframe player created - user must manually click play");
-      window.playerState.playerReady = true;
-      window.playerState.bandcampDuration = media.duration || 180;
+    // Setup SoundCloud player - use load event instead of arbitrary delay
+    const scIframe = document.getElementById('active-player');
+    if (scIframe) {
+      scIframe.addEventListener('load', () => {
+        console.log('[SoundCloud] iframe loaded, initializing widget');
+        initSoundCloud(elapsed, isHost);
+      });
+      // Fallback if load event doesn't fire (some browsers)
+      setTimeout(() => {
+        if (!window.playerState.playerReady) {
+          console.log('[SoundCloud] Fallback init after timeout');
+          initSoundCloud(elapsed, isHost);
+        }
+      }, 3000);
     }
+    
   }
-}
-
-// ===========================================
-// BANDCAMP HTML5 AUDIO INITIALIZATION
-// ===========================================
-function initBandcampAudio(startPosition, isHost, duration) {
-  const audio = document.getElementById('bandcamp-audio');
-  if (!audio) {
-    console.error("[Bandcamp] Audio element not found");
-    return;
-  }
-  
-  console.log("[Bandcamp] Initializing HTML5 audio, start:", startPosition, "isHost:", isHost, "duration:", duration);
-  
-  // Store duration for end detection
-  window.playerState.bandcampDuration = duration;
-  window.playerState.bandcampAudio = audio;
-  
-  // Apply saved volume
-  const savedVolume = window.playerState.volume;
-  audio.volume = savedVolume / 100;
-  console.log('[Bandcamp] Applied saved volume:', savedVolume);
-  
-  // Handle canplay event - seek to position and play
-  audio.addEventListener('canplay', function onCanPlay() {
-    console.log("[Bandcamp] Audio can play");
-    window.playerState.playerReady = true;
-    
-    // Seek to current position if joining mid-track
-    if (startPosition > 0 && startPosition < duration) {
-      console.log("[Bandcamp] Seeking to position:", startPosition);
-      audio.currentTime = startPosition;
-    }
-    
-    // Try to play
-    audio.play().then(() => {
-      console.log("[Bandcamp] ✅ Autoplay successful!");
-      // Auto-start the server timer since we're autoplaying
-      if (isHost) {
-        console.log("[Bandcamp] Host auto-starting timer");
-        pushBandcampStarted();
-      }
-    }).catch(err => {
-      console.log("[Bandcamp] Autoplay blocked:", err.message);
-      // Show a play button overlay if autoplay is blocked
-      showBandcampPlayOverlay(audio, isHost);
-    });
-    
-    // Remove this listener after first trigger
-    audio.removeEventListener('canplay', onCanPlay);
-  });
-  
-  // Handle ended event
-  audio.addEventListener('ended', () => {
-    console.log("[Bandcamp] Audio ended, isHost:", window.playerState.isHost);
-    if (window.playerState.isHost && !window.playerState.endTriggered) {
-      console.log("[Bandcamp] 🚀 Host triggering queue advance!");
-      window.playerState.endTriggered = true;
-      pushVideoEnded();
-    }
-  });
-  
-  // Handle errors
-  audio.addEventListener('error', (e) => {
-    console.error("[Bandcamp] Audio error:", e);
-  });
-  
-  // Handle timeupdate for near-end detection
-  audio.addEventListener('timeupdate', () => {
-    const remaining = duration - audio.currentTime;
-    if (remaining < 2 && window.playerState.isHost && !window.playerState.endTriggered) {
-      console.log("[Bandcamp] Near end - triggering advance");
-      window.playerState.endTriggered = true;
-      pushVideoEnded();
-    }
-  });
-}
-
-// Show play button overlay if autoplay is blocked
-function showBandcampPlayOverlay(audio, isHost) {
-  const container = document.getElementById('player-host');
-  if (!container) return;
-  
-  const overlay = document.createElement('div');
-  overlay.id = 'bandcamp-play-overlay';
-  overlay.className = 'absolute inset-0 bg-black/50 flex items-center justify-center z-10 cursor-pointer';
-  overlay.innerHTML = `
-    <div class="text-center">
-      <div class="w-24 h-24 mx-auto mb-4 rounded-full bg-cyan-500 flex items-center justify-center hover:bg-cyan-400 transition transform hover:scale-110">
-        <svg class="w-12 h-12 text-white ml-2" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M8 5v14l11-7z"/>
-        </svg>
-      </div>
-      <p class="text-white text-xl font-bold">Click to Play</p>
-      <p class="text-white/60 text-sm mt-2">Browser requires user interaction to start audio</p>
-    </div>
-  `;
-  
-  overlay.addEventListener('click', () => {
-    audio.play().then(() => {
-      console.log("[Bandcamp] ✅ Manual play successful!");
-      overlay.remove();
-      if (isHost) {
-        pushBandcampStarted();
-      }
-    }).catch(err => {
-      console.error("[Bandcamp] Play failed:", err);
-    });
-  });
-  
-  container.appendChild(overlay);
 }
 
 // ===========================================
@@ -614,6 +351,17 @@ function initYouTubePlayer(videoId, startSeconds, isHost) {
             '5': 'cued'
           };
           console.log("[YouTube] State changed to:", event.data, `(${stateNames[event.data] || 'unknown'})`);
+          
+          // State 1 = PLAYING - anchor sync timeline to actual playback start
+          if (event.data === 1 && !window.playerState._playbackAnchored) {
+            window.playerState._playbackAnchored = true;
+            const actualPos = event.target.getCurrentTime();
+            const now = Date.now();
+            // Set videoStartedAt so that (now - videoStartedAt)/1000 == actualPos
+            window.playerState.videoStartedAt = now - (actualPos * 1000);
+            window.playerState.localPlaybackStartedAt = now;
+            console.log(`[YouTube] ▶ Playback anchored: position=${actualPos.toFixed(1)}s, videoStartedAt adjusted`);
+          }
           
           // State 0 = ENDED
           if (event.data === 0) {
@@ -685,7 +433,13 @@ function initSoundCloud(startPosition, isHost) {
   
   if (!window.SC?.Widget) {
     console.log("[SoundCloud] API not loaded, retrying...");
-    setTimeout(() => initSoundCloud(startPosition, isHost), 500);
+    setTimeout(() => initSoundCloud(startPosition, isHost), 200);
+    return;
+  }
+  
+  // Prevent double-initialization
+  if (window.playerState.playerReady) {
+    console.log("[SoundCloud] Already initialized, skipping");
     return;
   }
   
@@ -702,13 +456,27 @@ function initSoundCloud(startPosition, isHost) {
     widget.setVolume(savedVolume);
     console.log('[SoundCloud] Applied saved volume:', savedVolume);
     
-    widget.play();
-    
     if (startPosition > 0) {
-      setTimeout(() => {
-        widget.seekTo(startPosition * 1000);
-        widget.play();
-      }, 500);
+      // Mid-join: seek first, then play
+      widget.seekTo(startPosition * 1000);
+      widget.play();
+    } else {
+      // New track: just play from the start
+      widget.play();
+    }
+  });
+  
+  // Anchor sync timeline when actual playback starts
+  widget.bind(window.SC.Widget.Events.PLAY, () => {
+    if (!window.playerState._playbackAnchored) {
+      window.playerState._playbackAnchored = true;
+      widget.getPosition((posMs) => {
+        const actualPos = posMs / 1000;
+        const now = Date.now();
+        window.playerState.videoStartedAt = now - (actualPos * 1000);
+        window.playerState.localPlaybackStartedAt = now;
+        console.log(`[SoundCloud] ▶ Playback anchored: position=${actualPos.toFixed(1)}s, videoStartedAt adjusted`);
+      });
     }
   });
   
@@ -773,12 +541,15 @@ setInterval(() => {
   if (!window.playerState.videoStartedAt || !window.playerState.playerReady) return;
   if (window.playerState.endTriggered) return; // Don't sync after video ended
   
-  // Don't run sync during the first 15 seconds of a new track
-  // This prevents the sync loop from interfering with initial playback
-  const timeSinceStart = Date.now() - window.playerState.localPlaybackStartedAt;
-  if (window.playerState.isNewTrack && timeSinceStart < 15000) {
-    return; // Skip sync during initial playback period
-  }
+  // Don't sync until playback has actually started and been anchored
+  // This prevents the sync loop from seeking based on stale timestamps
+  // before the player has loaded, buffered, and begun playing
+  if (!window.playerState._playbackAnchored) return;
+  
+  // Additional grace period: don't sync for the first 5 seconds after anchoring
+  // to let the player settle into steady playback
+  const timeSinceAnchor = Date.now() - window.playerState.localPlaybackStartedAt;
+  if (timeSinceAnchor < 5000) return;
   
   const expectedPos = (Date.now() - window.playerState.videoStartedAt) / 1000;
   
@@ -803,10 +574,6 @@ setInterval(() => {
       if (paused && !window.playerState.endTriggered) {
         console.log("[Sync] SoundCloud paused - resuming");
         window.scWidget.play();
-        setTimeout(() => {
-          const newExpected = (Date.now() - window.playerState.videoStartedAt) / 1000;
-          window.scWidget.seekTo(newExpected * 1000);
-        }, 300);
       }
     });
     
@@ -820,28 +587,6 @@ setInterval(() => {
     });
   }
   
-  // Bandcamp HTML5 audio sync
-  if (window.playerState.mediaType === "bandcamp" && window.playerState.bandcampAudio) {
-    const audio = window.playerState.bandcampAudio;
-    try {
-      const currentTime = audio.currentTime;
-      const drift = Math.abs(expectedPos - currentTime);
-      
-      // Auto-resume if paused
-      if (audio.paused && !window.playerState.endTriggered) {
-        console.log("[Sync] Bandcamp paused - resuming");
-        audio.play().catch(() => {});
-      }
-      
-      // Resync if drift is too large
-      if (drift > 5 && !audio.paused) {
-        console.log(`[Sync] Bandcamp drift ${drift.toFixed(1)}s - resyncing`);
-        audio.currentTime = expectedPos;
-      }
-    } catch(e) {
-      // Audio might not be ready
-    }
-  }
 }, 3000);
 
 // ===========================================
@@ -849,7 +594,7 @@ setInterval(() => {
 // ===========================================
 window.addEventListener("phx:create_player", (e) => {
   console.log("[Event] create_player received:", e.detail);
-  createPlayer(e.detail.media, e.detail.started_at, e.detail.is_host);
+  createPlayer(e.detail.media, e.detail.started_at, e.detail.is_host, e.detail.is_new_track !== false);
 });
 
 window.addEventListener("phx:set_host_status", (e) => {
@@ -1020,20 +765,43 @@ document.addEventListener('DOMContentLoaded', initializeVolumeUI);
 
 // Also initialize on LiveView navigation
 window.addEventListener('phx:page-loading-stop', () => {
-  setTimeout(initializeVolumeUI, 100);
+  setTimeout(() => {
+    initializeVolumeUI();
+    startVolumeObserver();
+  }, 100);
 });
 
-// Watch for the volume control element to appear (for LiveView dynamic content)
-const volumeObserver = new MutationObserver((mutations) => {
-  const slider = document.getElementById('volume-slider');
-  if (slider && slider.value === '80' && localStorage.getItem('playerVolume')) {
-    initializeVolumeUI();
-  }
-});
+// Watch for the volume slider to appear (for LiveView dynamic content)
+// Only observe the minimal scope needed, and disconnect once found
+let _volumeObserverActive = false;
+function startVolumeObserver() {
+  if (_volumeObserverActive) return;
+  _volumeObserverActive = true;
+  
+  const volumeObserver = new MutationObserver((mutations) => {
+    const slider = document.getElementById('volume-slider');
+    if (slider) {
+      const saved = localStorage.getItem('playerVolume');
+      // Only reinitialize if the slider has the wrong default value
+      if (saved && slider.value === '80' && saved !== '80') {
+        initializeVolumeUI();
+      }
+      // Stop observing once we've found and initialized the slider
+      volumeObserver.disconnect();
+      _volumeObserverActive = false;
+    }
+  });
+  
+  volumeObserver.observe(document.body, { childList: true, subtree: true });
+  
+  // Safety: disconnect after 10 seconds regardless
+  setTimeout(() => {
+    volumeObserver.disconnect();
+    _volumeObserverActive = false;
+  }, 10000);
+}
 
 // Start observing when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  volumeObserver.observe(document.body, { childList: true, subtree: true });
-});
+document.addEventListener('DOMContentLoaded', startVolumeObserver);
 
 console.log("✅ Simple sync player loaded (with YouTube IFrame API)");
