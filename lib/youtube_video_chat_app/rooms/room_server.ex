@@ -69,6 +69,12 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     :exit, _ -> {:error, :room_not_found}
   end
 
+  def remove_from_queue_by_user(room_id, media_id, user_id) do
+    GenServer.cast(via_tuple(room_id), {:remove_from_queue_by_user, media_id, user_id})
+  catch
+    :exit, _ -> {:error, :room_not_found}
+  end
+
   def add_multiple_to_queue(room_id, media_items, user) do
     GenServer.call(via_tuple(room_id), {:add_multiple_to_queue, media_items, user})
   catch
@@ -282,6 +288,25 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     
     broadcast_queue_update(state.room_id, new_queue)
     {:noreply, %{state | queue: new_queue}, @idle_timeout}
+  end
+
+  @impl true
+  def handle_cast({:remove_from_queue_by_user, media_id, user_id}, state) do
+    Logger.debug("User #{user_id} attempting to remove media #{media_id} from queue")
+    
+    # Only remove if the media was added by this user
+    new_queue = Enum.reject(state.queue, fn media -> 
+      media.id == media_id && media.added_by_id == user_id
+    end)
+    
+    if length(new_queue) < length(state.queue) do
+      Logger.debug("Successfully removed media added by user #{user_id}")
+      broadcast_queue_update(state.room_id, new_queue)
+      {:noreply, %{state | queue: new_queue}, @idle_timeout}
+    else
+      Logger.debug("Media not found or user #{user_id} is not the owner")
+      {:noreply, state, @idle_timeout}
+    end
   end
 
   @impl true

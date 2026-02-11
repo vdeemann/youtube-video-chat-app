@@ -112,6 +112,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:selected_playlist, nil)
     |> assign(:new_playlist_name, "")
     |> assign(:playlist_add_url, "")
+    |> assign(:playlist_search_query, "")
+    |> assign(:show_grab_modal, false)
     |> push_event("set_host_status", %{is_host: is_host})
     
     # Always send create_player event if there's media
@@ -314,6 +316,43 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   @impl true
+  def handle_event("remove_own_from_queue", %{"id" => media_id}, socket) do
+    # Only registered users can remove their own songs
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
+    else
+      # Remove the song if it was added by this user
+      RoomServer.remove_from_queue_by_user(
+        socket.assigns.room.id, 
+        media_id, 
+        socket.assigns.user.id
+      )
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("skip_own_song", _params, socket) do
+    # Only registered users can skip their own songs
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
+    else
+      # Check if the currently playing song belongs to this user
+      current_media_added_by_id = socket.assigns.current_media && 
+        (Map.get(socket.assigns.current_media, :added_by_id) || Map.get(socket.assigns.current_media, "added_by_id"))
+      
+      if current_media_added_by_id == socket.assigns.user.id do
+        Logger.info("User #{socket.assigns.user.username} skipping their own song")
+        RoomServer.play_next(socket.assigns.room.id)
+      else
+        Logger.warning("User #{socket.assigns.user.username} tried to skip someone else's song")
+      end
+      
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("video_ended", params, socket) do
     Logger.info("\n" <> String.duplicate("=", 50))
     Logger.info("🎬 VIDEO_ENDED EVENT RECEIVED")
@@ -397,8 +436,14 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       playlist_modal_view: :list,
       selected_playlist: nil,
       new_playlist_name: "",
-      playlist_add_url: ""
+      playlist_add_url: "",
+      playlist_search_query: ""
     )}
+  end
+
+  @impl true
+  def handle_event("playlist_search", %{"value" => query}, socket) do
+    {:noreply, assign(socket, :playlist_search_query, query)}
   end
 
   @impl true
@@ -413,7 +458,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       playlist_modal_view: :list,
       selected_playlist: nil,
       user_playlists: playlists,
-      playlist_add_url: ""
+      playlist_add_url: "",
+      playlist_search_query: ""
     )}
   end
 
@@ -632,6 +678,123 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   @impl true
+  def handle_event("open_grab_modal", _params, socket) do
+    if socket.assigns.is_guest do
+      {:noreply, assign(socket, :show_login_prompt, true)}
+    else
+      # Refresh playlists when opening modal
+      playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
+      {:noreply, assign(socket,
+        show_grab_modal: true,
+        user_playlists: playlists
+      )}
+    end
+  end
+
+  @impl true
+  def handle_event("close_grab_modal", _params, socket) do
+    {:noreply, assign(socket, show_grab_modal: false)}
+  end
+
+  @impl true
+  def handle_event("grab_to_playlist", %{"playlist-id" => playlist_id}, socket) do
+    user = socket.assigns.current_user
+    current_media = socket.assigns.current_media
+    
+    if current_media do
+      media_type = Map.get(current_media, :type) || Map.get(current_media, "type")
+      media_id = Map.get(current_media, :media_id) || Map.get(current_media, "media_id")
+      title = Map.get(current_media, :title) || Map.get(current_media, "title")
+      thumbnail = Map.get(current_media, :thumbnail) || Map.get(current_media, "thumbnail")
+      duration = Map.get(current_media, :duration) || Map.get(current_media, "duration")
+      embed_url = Map.get(current_media, :embed_url) || Map.get(current_media, "embed_url")
+      original_url = Map.get(current_media, :original_url) || Map.get(current_media, "original_url")
+      
+      item_attrs = %{
+        media_type: media_type,
+        media_id: media_id,
+        title: title,
+        thumbnail: thumbnail,
+        duration: duration,
+        embed_url: embed_url,
+        original_url: original_url
+      }
+      
+      case Playlists.add_item_to_playlist(playlist_id, item_attrs) do
+        {:ok, _item} ->
+          playlist = Playlists.get_playlist!(playlist_id)
+          playlists = Playlists.list_user_playlists_with_counts(user.id)
+          
+          # Update main_playlist if this is it
+          main_with_items = if socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist_id do
+            Playlists.get_playlist_with_items!(playlist_id)
+          else
+            socket.assigns.main_playlist
+          end
+          
+          {:noreply, assign(socket,
+            show_grab_modal: false,
+            user_playlists: playlists,
+            main_playlist: main_with_items
+          ) |> put_flash(:info, "Added to '#{playlist.name}'!")}
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Failed to add track")}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "No track is currently playing")}
+    end
+  end
+
+  @impl true
+  def handle_event("create_playlist_from_grab", _params, socket) do
+    user = socket.assigns.current_user
+    current_media = socket.assigns.current_media
+    
+    if current_media do
+      # Create a new playlist with a default name
+      timestamp = DateTime.utc_now() |> DateTime.to_unix()
+      playlist_name = "Grabbed Songs #{timestamp}"
+      
+      case Playlists.create_playlist(%{name: playlist_name, user_id: user.id}) do
+        {:ok, playlist} ->
+          # Add the current track to the new playlist
+          media_type = Map.get(current_media, :type) || Map.get(current_media, "type")
+          media_id = Map.get(current_media, :media_id) || Map.get(current_media, "media_id")
+          title = Map.get(current_media, :title) || Map.get(current_media, "title")
+          thumbnail = Map.get(current_media, :thumbnail) || Map.get(current_media, "thumbnail")
+          duration = Map.get(current_media, :duration) || Map.get(current_media, "duration")
+          embed_url = Map.get(current_media, :embed_url) || Map.get(current_media, "embed_url")
+          original_url = Map.get(current_media, :original_url) || Map.get(current_media, "original_url")
+          
+          item_attrs = %{
+            media_type: media_type,
+            media_id: media_id,
+            title: title,
+            thumbnail: thumbnail,
+            duration: duration,
+            embed_url: embed_url,
+            original_url: original_url
+          }
+          
+          case Playlists.add_item_to_playlist(playlist.id, item_attrs) do
+            {:ok, _item} ->
+              playlists = Playlists.list_user_playlists_with_counts(user.id)
+              {:noreply, assign(socket,
+                show_grab_modal: false,
+                user_playlists: playlists
+              ) |> put_flash(:info, "Created '#{playlist_name}' and added track!")}
+            {:error, _} ->
+              {:noreply, put_flash(socket, :error, "Failed to add track to new playlist")}
+          end
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Failed to create playlist")}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "No track is currently playing")}
+    end
+  end
+
+  @impl true
   def handle_event("load_main_playlist", _params, socket) do
     if socket.assigns.is_guest do
       {:noreply, assign(socket, :show_login_prompt, true)}
@@ -759,7 +922,59 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff", payload: diff}, socket) do
     Logger.info("👥 Presence diff received - joins: #{map_size(diff.joins)}, leaves: #{map_size(diff.leaves)}")
     
-    # Only update presences, nothing else - this should NOT affect the player
+    # Handle joins - send join messages for registered users only
+    Enum.each(diff.joins, fn {_user_id, %{metas: [meta | _]}} ->
+      unless meta.is_guest do
+        # Only send join messages for registered users
+        message = %{
+          id: Ecto.UUID.generate(),
+          text: "#{meta.username} joined the room",
+          username: "System",
+          color: "#888888",
+          timestamp: DateTime.utc_now(),
+          is_system: true
+        }
+        
+        # Store message in RoomServer
+        RoomServer.add_message(socket.assigns.room.id, message)
+        
+        # Broadcast to all viewers
+        PubSub.broadcast(
+          YoutubeVideoChatApp.PubSub,
+          "room:#{socket.assigns.room.id}",
+          {:new_message, message}
+        )
+      end
+    end)
+    
+    # Handle leaves - send leave messages for registered users only
+    Enum.each(diff.leaves, fn {user_id, %{metas: metas}} ->
+      # Get the meta from leaves to check if guest
+      meta = List.first(metas)
+      unless meta.is_guest do
+        # Only send leave messages for registered users
+        message = %{
+          id: Ecto.UUID.generate(),
+          text: "#{meta.username} left the room",
+          username: "System",
+          color: "#888888",
+          timestamp: DateTime.utc_now(),
+          is_system: true
+        }
+        
+        # Store message in RoomServer
+        RoomServer.add_message(socket.assigns.room.id, message)
+        
+        # Broadcast to all viewers
+        PubSub.broadcast(
+          YoutubeVideoChatApp.PubSub,
+          "room:#{socket.assigns.room.id}",
+          {:new_message, message}
+        )
+      end
+    end)
+    
+    # Update presences - this should NOT affect the player
     new_presences = socket.assigns.presences
     |> handle_leaves_map(diff.leaves)
     |> handle_joins_map(diff.joins)
