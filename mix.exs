@@ -44,9 +44,9 @@ defmodule YoutubeVideoChatApp.MixProject do
       {:jason, "~> 1.2"},
       {:plug_cowboy, "~> 2.7"},
       {:heroicons, "~> 0.5"},
-      {:floki, ">= 0.30.0"},
-      {:req, "~> 0.4"},
-      {:bcrypt_elixir, "~> 3.0"},
+      {:floki, ">= 0.30.0", only: :test},
+      # TEMPORARILY COMMENTED OUT - bcrypt needs Visual Studio Build Tools
+      # {:bcrypt_elixir, "~> 3.0"},
       {:dns_cluster, "~> 0.1.1"},
       {:swoosh, "~> 1.5"}
     ]
