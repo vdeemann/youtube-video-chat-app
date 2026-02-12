@@ -2,8 +2,13 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   @moduledoc """
   GenServer for managing room state and video synchronization.
   
-  Automatically terminates after 30 minutes of inactivity (no viewers)
-  to prevent memory leaks from orphaned room processes.
+  Uses a DJ line system for fair turn-taking:
+  - Users join the line when they add their first track
+  - Each user gets one track played before the next user's turn
+  - After playing, the DJ goes to the back of the line
+  - When a user's personal queue is empty, they leave the line
+  
+  Automatically terminates after 30 minutes of inactivity.
   """
   use GenServer
   alias Phoenix.PubSub
@@ -15,14 +20,16 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   defstruct [
     :room_id,
     :current_media,    # Currently playing media
+    :current_dj,       # User ID of the current DJ
     :video_state,      # playing/paused
     :video_timestamp,  # current playback position
     :video_started_at, # When the current video started playing
-    :queue,           # upcoming media queue (not including current)
+    :dj_line,          # Ordered list of {user_id, username, color} — the turn order
+    :user_queues,      # %{user_id => [media, ...]} — each user's personal queue
     :host_id,
     :viewers,
     :last_sync,
-    :messages         # Recent chat messages (last 50)
+    :messages          # Recent chat messages (last 50)
   ]
 
   # Client API
@@ -32,7 +39,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       name: via_tuple(room_id))
   end
 
-  # Use Registry for faster process lookup (vs :global)
   defp via_tuple(room_id) do
     {:via, Registry, {YoutubeVideoChatApp.RoomRegistry, room_id}}
   end
@@ -106,29 +112,48 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def init(room_id) do
     Logger.debug("RoomServer starting for room #{room_id}")
     
-    # Load room from database if exists
     room = YoutubeVideoChatApp.Rooms.get_room!(room_id)
     
     state = %__MODULE__{
       room_id: room_id,
       current_media: nil,
+      current_dj: nil,
       video_state: "paused",
       video_timestamp: 0,
       video_started_at: nil,
-      queue: [],
+      dj_line: [],
+      user_queues: %{},
       host_id: room.host_id,
       viewers: MapSet.new(),
       last_sync: System.monotonic_time(:second),
       messages: []
     }
     
-    # Start with idle timeout - will terminate if no activity
     {:ok, state, @idle_timeout}
   end
 
   @impl true
   def handle_call(:get_state, _from, state) do
-    {:reply, {:ok, state}, state, @idle_timeout}
+    # Build a flat queue for backward compatibility with the LiveView
+    queue = build_flat_queue(state)
+    
+    dj_line_info = Enum.map(state.dj_line, fn {uid, username, color} ->
+      track_count = length(Map.get(state.user_queues, uid, []))
+      %{user_id: uid, username: username, color: color, track_count: track_count}
+    end)
+    
+    compat_state = %{
+      current_media: state.current_media,
+      video_state: state.video_state,
+      video_timestamp: state.video_timestamp,
+      video_started_at: state.video_started_at,
+      queue: queue,
+      dj_line: dj_line_info,
+      user_queues: state.user_queues,
+      current_dj: state.current_dj
+    }
+    
+    {:reply, {:ok, compat_state}, state, @idle_timeout}
   end
 
   @impl true
@@ -138,45 +163,29 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @impl true
   def handle_call({:add_to_queue, media_data, user}, _from, state) do
-    # Convert all keys to atoms for consistency
-    media = %{
-      id: Ecto.UUID.generate(),
-      type: media_data["type"] || media_data[:type],
-      media_id: media_data["media_id"] || media_data[:media_id],
-      title: media_data["title"] || media_data[:title] || "Unknown",
-      thumbnail: media_data["thumbnail"] || media_data[:thumbnail],
-      duration: media_data["duration"] || media_data[:duration] || 300,
-      embed_url: media_data["embed_url"] || media_data[:embed_url],
-      original_url: media_data["original_url"] || media_data[:original_url],
-      added_by_username: user.username,
-      added_by_id: user.id,
-      added_at: DateTime.utc_now()
-    }
+    media = build_media(media_data, user)
     
-    Logger.debug("Adding to queue: #{media.title} (#{media.type})")
+    Logger.debug("Adding to queue: #{media.title} by #{user.username}")
     
-    # If no media is currently playing, start this one immediately
-    new_state = if is_nil(state.current_media) do
-      # Broadcast to all clients in proper order
-      broadcast_media_change(state.room_id, media)
-      broadcast_queue_update(state.room_id, state.queue)
-      broadcast_play_next(state.room_id, media, state.queue)
-      
-      Logger.debug("Now playing: #{media.title}")
-      
-      %{state | 
-        current_media: media, 
-        video_state: "playing",
-        video_timestamp: 0,
-        video_started_at: DateTime.utc_now()
-      }
+    # Add track to this user's personal queue
+    user_queue = Map.get(state.user_queues, user.id, [])
+    new_user_queues = Map.put(state.user_queues, user.id, user_queue ++ [media])
+    
+    # Add user to DJ line if not already in it
+    new_dj_line = if in_dj_line?(state.dj_line, user.id) do
+      state.dj_line
     else
-      # Add to queue (prepend for O(1), reverse when reading)
-      new_queue = state.queue ++ [media]
-      Logger.debug("Queue size: #{length(new_queue)}")
-      
-      broadcast_queue_update(state.room_id, new_queue)
-      %{state | queue: new_queue}
+      state.dj_line ++ [{user.id, user.username, user.color}]
+    end
+    
+    new_state = %{state | user_queues: new_user_queues, dj_line: new_dj_line}
+    
+    # If nothing is playing, start immediately
+    new_state = if is_nil(state.current_media) do
+      play_from_next_dj(new_state)
+    else
+      broadcast_full_update(new_state)
+      new_state
     end
     
     {:reply, {:ok, media}, new_state, @idle_timeout}
@@ -184,95 +193,39 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @impl true
   def handle_call(:play_next, _from, state) do
-    Logger.debug("play_next called, queue size: #{length(state.queue)}")
+    Logger.debug("play_next called")
     
-    case state.queue do
-      [next | rest] ->
-        Logger.debug("Advancing to: #{next.title}")
-        
-        # UPDATE STATE FIRST before broadcasting
-        new_state = %{state | 
-          current_media: next,
-          queue: rest,
-          video_state: "playing",
-          video_timestamp: 0,
-          video_started_at: DateTime.utc_now()
-        }
-        
-        # Now broadcast with the correct updated queue
-        broadcast_media_change(state.room_id, next)
-        broadcast_queue_update(state.room_id, rest)
-        broadcast_play_next(state.room_id, next, rest)
-        
-        {:reply, :ok, new_state, @idle_timeout}
-      
-      [] ->
-        Logger.debug("Queue empty, stopping playback")
-        
-        # Update state first
-        new_state = %{state | 
-          current_media: nil,
-          video_state: "paused",
-          video_timestamp: 0,
-          video_started_at: nil,
-          queue: []
-        }
-        
-        # Then broadcast
-        broadcast_media_change(state.room_id, nil)
-        broadcast_queue_update(state.room_id, [])
-        broadcast_play_next(state.room_id, nil, [])
-        
-        {:reply, :ok, new_state, @idle_timeout}
-    end
+    # Move current DJ to back of line, advance to next
+    new_state = advance_to_next(state)
+    
+    {:reply, :ok, new_state, @idle_timeout}
   end
 
   @impl true
   def handle_call({:add_multiple_to_queue, media_items, user}, _from, state) do
-    Logger.debug("Adding #{length(media_items)} items from playlist")
+    Logger.debug("Adding #{length(media_items)} items from playlist by #{user.username}")
     
-    # Convert all items to the proper format
-    converted_items = Enum.map(media_items, fn item ->
-      %{
-        id: Ecto.UUID.generate(),
-        type: item[:type] || item["type"],
-        media_id: item[:media_id] || item["media_id"],
-        title: item[:title] || item["title"] || "Unknown",
-        thumbnail: item[:thumbnail] || item["thumbnail"],
-        duration: item[:duration] || item["duration"] || 180,
-        embed_url: item[:embed_url] || item["embed_url"],
-        original_url: item[:original_url] || item["original_url"],
-        added_by_username: user.username,
-        added_by_id: user.id,
-        added_at: DateTime.utc_now()
-      }
-    end)
+    converted_items = Enum.map(media_items, fn item -> build_media(item, user) end)
     
-    # If nothing is playing, start the first one immediately
-    new_state = if is_nil(state.current_media) and length(converted_items) > 0 do
-      [first | rest] = converted_items
-      new_queue = state.queue ++ rest
-      
-      Logger.debug("Starting first track: #{first.title}, #{length(rest)} more queued")
-      
-      broadcast_media_change(state.room_id, first)
-      broadcast_queue_update(state.room_id, new_queue)
-      broadcast_play_next(state.room_id, first, new_queue)
-      
-      %{state | 
-        current_media: first, 
-        video_state: "playing",
-        video_timestamp: 0,
-        video_started_at: DateTime.utc_now(),
-        queue: new_queue
-      }
+    # Add all tracks to this user's personal queue
+    user_queue = Map.get(state.user_queues, user.id, [])
+    new_user_queues = Map.put(state.user_queues, user.id, user_queue ++ converted_items)
+    
+    # Add user to DJ line if not already in it
+    new_dj_line = if in_dj_line?(state.dj_line, user.id) do
+      state.dj_line
     else
-      # Add all to queue
-      new_queue = state.queue ++ converted_items
-      Logger.debug("Queue size now: #{length(new_queue)}")
-      
-      broadcast_queue_update(state.room_id, new_queue)
-      %{state | queue: new_queue}
+      state.dj_line ++ [{user.id, user.username, user.color}]
+    end
+    
+    new_state = %{state | user_queues: new_user_queues, dj_line: new_dj_line}
+    
+    # If nothing is playing, start immediately
+    new_state = if is_nil(state.current_media) do
+      play_from_next_dj(new_state)
+    else
+      broadcast_full_update(new_state)
+      new_state
     end
     
     {:reply, {:ok, length(converted_items)}, new_state, @idle_timeout}
@@ -282,54 +235,55 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def handle_cast({:remove_from_queue, media_id}, state) do
     Logger.debug("Removing media from queue: #{media_id}")
     
-    new_queue = Enum.reject(state.queue, fn media -> 
-      media.id == media_id
+    # Remove from whichever user's queue it belongs to
+    new_user_queues = Enum.into(state.user_queues, %{}, fn {uid, tracks} ->
+      {uid, Enum.reject(tracks, &(&1.id == media_id))}
     end)
     
-    broadcast_queue_update(state.room_id, new_queue)
-    {:noreply, %{state | queue: new_queue}, @idle_timeout}
+    # Clean up: remove users with empty queues from the DJ line
+    # (but keep current DJ even if their queue is empty — they're playing)
+    new_state = %{state | user_queues: new_user_queues}
+    |> cleanup_dj_line()
+    
+    broadcast_full_update(new_state)
+    {:noreply, new_state, @idle_timeout}
   end
 
   @impl true
   def handle_cast({:remove_from_queue_by_user, media_id, user_id}, state) do
-    Logger.debug("User #{user_id} attempting to remove media #{media_id} from queue")
+    Logger.debug("User #{user_id} removing media #{media_id}")
     
-    # Only remove if the media was added by this user
-    new_queue = Enum.reject(state.queue, fn media -> 
-      media.id == media_id && media.added_by_id == user_id
-    end)
+    user_queue = Map.get(state.user_queues, user_id, [])
+    new_queue = Enum.reject(user_queue, &(&1.id == media_id))
     
-    if length(new_queue) < length(state.queue) do
-      Logger.debug("Successfully removed media added by user #{user_id}")
-      broadcast_queue_update(state.room_id, new_queue)
-      {:noreply, %{state | queue: new_queue}, @idle_timeout}
+    if length(new_queue) < length(user_queue) do
+      new_user_queues = Map.put(state.user_queues, user_id, new_queue)
+      new_state = %{state | user_queues: new_user_queues}
+      |> cleanup_dj_line()
+      
+      broadcast_full_update(new_state)
+      {:noreply, new_state, @idle_timeout}
     else
-      Logger.debug("Media not found or user #{user_id} is not the owner")
       {:noreply, state, @idle_timeout}
     end
   end
 
   @impl true
   def handle_cast({:update_progress, current_time, _duration}, state) do
-    # Update video progress from client (for UI display only)
-    # JavaScript video_ended event handles advancement
     {:noreply, %{state | video_timestamp: current_time}, @idle_timeout}
   end
 
   @impl true
   def handle_cast({:add_message, message}, state) do
-    # Add message to the front, keep only last 50
     messages = [message | (state.messages || [])] |> Enum.take(50)
     {:noreply, %{state | messages: messages}, @idle_timeout}
   end
 
   @impl true
   def handle_cast({:sync_video, timestamp, video_state, user_id}, state) do
-    # Only allow host to sync
     if user_id == state.host_id do
       now = System.monotonic_time(:second)
       
-      # Always broadcast sync for real-time updates
       PubSub.broadcast(
         YoutubeVideoChatApp.PubSub, 
         "room:#{state.room_id}", 
@@ -346,18 +300,162 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     end
   end
 
-  # Handle idle timeout - terminate if no activity
   @impl true
   def handle_info(:timeout, state) do
     Logger.debug("RoomServer #{state.room_id} idle timeout - terminating")
     {:stop, :normal, state}
   end
 
-  # Private functions
+  # ============================================================================
+  # Private: DJ Line Logic
+  # ============================================================================
+
+  # Play the next track from the first DJ in line
+  defp play_from_next_dj(state) do
+    case state.dj_line do
+      [{user_id, _username, _color} | _rest] ->
+        user_queue = Map.get(state.user_queues, user_id, [])
+        
+        case user_queue do
+          [next_track | remaining] ->
+            new_user_queues = Map.put(state.user_queues, user_id, remaining)
+            
+            new_state = %{state | 
+              current_media: next_track,
+              current_dj: user_id,
+              video_state: "playing",
+              video_timestamp: 0,
+              video_started_at: DateTime.utc_now(),
+              user_queues: new_user_queues
+            }
+            
+            queue = build_flat_queue(new_state)
+            broadcast_media_change(state.room_id, next_track)
+            broadcast_queue_update(state.room_id, queue)
+            broadcast_play_next(state.room_id, next_track, queue)
+            broadcast_dj_line_update(new_state)
+            
+            new_state
+          
+          [] ->
+            # This DJ has no tracks, remove them and try next
+            new_dj_line = remove_from_dj_line(state.dj_line, user_id)
+            new_user_queues = Map.delete(state.user_queues, user_id)
+            play_from_next_dj(%{state | dj_line: new_dj_line, user_queues: new_user_queues})
+        end
+      
+      [] ->
+        # No DJs in line, stop playback
+        new_state = %{state | 
+          current_media: nil,
+          current_dj: nil,
+          video_state: "paused",
+          video_timestamp: 0,
+          video_started_at: nil
+        }
+        
+        broadcast_media_change(state.room_id, nil)
+        broadcast_queue_update(state.room_id, [])
+        broadcast_play_next(state.room_id, nil, [])
+        broadcast_dj_line_update(new_state)
+        
+        new_state
+    end
+  end
+
+  # Current DJ's track ended — move them to back of line, play next DJ
+  defp advance_to_next(state) do
+    case state.dj_line do
+      [current_dj_tuple | rest] ->
+        {dj_id, _, _} = current_dj_tuple
+        remaining_tracks = Map.get(state.user_queues, dj_id, [])
+        
+        # If current DJ still has tracks, move to back of line
+        # Otherwise, remove them from the line and clean up their queue
+        {new_dj_line, new_user_queues} = if length(remaining_tracks) > 0 do
+          {rest ++ [current_dj_tuple], state.user_queues}
+        else
+          {rest, Map.delete(state.user_queues, dj_id)}
+        end
+        
+        new_state = %{state | dj_line: new_dj_line, user_queues: new_user_queues}
+        play_from_next_dj(new_state)
+      
+      [] ->
+        play_from_next_dj(state)
+    end
+  end
+
+  # Build a flat queue for display: walk the DJ line round-robin, 
+  # taking one track from each DJ per round
+  defp build_flat_queue(state) do
+    build_flat_queue_recursive(state.dj_line, state.user_queues, [])
+  end
+
+  defp build_flat_queue_recursive(dj_line, user_queues, acc) do
+    # One pass through the DJ line, taking 1 track from each
+    {round_tracks, remaining_queues, has_more} = 
+      Enum.reduce(dj_line, {[], user_queues, false}, fn {uid, _name, _color}, {tracks, queues, more} ->
+        case Map.get(queues, uid, []) do
+          [track | rest] ->
+            {tracks ++ [track], Map.put(queues, uid, rest), true}
+          [] ->
+            {tracks, queues, more}
+        end
+      end)
+    
+    new_acc = acc ++ round_tracks
+    
+    if has_more do
+      build_flat_queue_recursive(dj_line, remaining_queues, new_acc)
+    else
+      new_acc
+    end
+  end
+
+  # Remove users from DJ line who have no tracks left (excluding current DJ)
+  defp cleanup_dj_line(state) do
+    new_dj_line = Enum.filter(state.dj_line, fn {uid, _, _} ->
+      uid == state.current_dj || length(Map.get(state.user_queues, uid, [])) > 0
+    end)
+    %{state | dj_line: new_dj_line}
+  end
+
+  defp in_dj_line?(dj_line, user_id) do
+    Enum.any?(dj_line, fn {uid, _, _} -> uid == user_id end)
+  end
+
+  defp remove_from_dj_line(dj_line, user_id) do
+    Enum.reject(dj_line, fn {uid, _, _} -> uid == user_id end)
+  end
+
+  defp build_media(media_data, user) do
+    %{
+      id: Ecto.UUID.generate(),
+      type: media_data["type"] || media_data[:type],
+      media_id: media_data["media_id"] || media_data[:media_id],
+      title: media_data["title"] || media_data[:title] || "Unknown",
+      thumbnail: media_data["thumbnail"] || media_data[:thumbnail],
+      duration: media_data["duration"] || media_data[:duration] || 300,
+      embed_url: media_data["embed_url"] || media_data[:embed_url],
+      original_url: media_data["original_url"] || media_data[:original_url],
+      added_by_username: user.username,
+      added_by_id: user.id,
+      added_at: DateTime.utc_now()
+    }
+  end
+
+  # ============================================================================
+  # Broadcasting
+  # ============================================================================
+
+  defp broadcast_full_update(state) do
+    queue = build_flat_queue(state)
+    broadcast_queue_update(state.room_id, queue)
+    broadcast_dj_line_update(state)
+  end
 
   defp broadcast_media_change(room_id, media) do
-    Logger.debug("Broadcasting media change: #{inspect(media && media.title)}")
-    
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,
       "room:#{room_id}",
@@ -366,8 +464,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   defp broadcast_queue_update(room_id, queue) do
-    Logger.debug("Broadcasting queue update, size: #{length(queue)}")
-    
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,
       "room:#{room_id}",
@@ -376,12 +472,24 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   defp broadcast_play_next(room_id, media, queue) do
-    Logger.debug("Broadcasting play_next: #{inspect(media && media.title)}")
-    
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,
       "room:#{room_id}",
       {:play_next, media, queue}
+    )
+  end
+
+  defp broadcast_dj_line_update(state) do
+    # Send DJ line info along with per-user track counts
+    dj_line_info = Enum.map(state.dj_line, fn {uid, username, color} ->
+      track_count = length(Map.get(state.user_queues, uid, []))
+      %{user_id: uid, username: username, color: color, track_count: track_count}
+    end)
+    
+    PubSub.broadcast!(
+      YoutubeVideoChatApp.PubSub,
+      "room:#{state.room_id}",
+      {:dj_line_updated, dj_line_info, state.current_dj}
     )
   end
 end

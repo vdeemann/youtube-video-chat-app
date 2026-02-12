@@ -27,7 +27,7 @@ defmodule YoutubeVideoChatApp.MixProject do
 
   # Specifies your project dependencies.
   defp deps do
-    [
+    base_deps = [
       {:phoenix, "~> 1.7.11"},
       {:phoenix_ecto, "~> 4.4"},
       {:ecto_sql, "~> 3.11"},
@@ -45,10 +45,21 @@ defmodule YoutubeVideoChatApp.MixProject do
       {:plug_cowboy, "~> 2.7"},
       {:heroicons, "~> 0.5"},
       {:floki, ">= 0.30.0", only: :test},
-      {:bcrypt_elixir, "~> 3.0"},
+      {:comeonin, "~> 5.5"},
+      {:pbkdf2_elixir, "~> 2.0"},
       {:dns_cluster, "~> 0.1.1"},
       {:swoosh, "~> 1.5"}
     ]
+
+    # Only include bcrypt on non-Windows systems (Linux, macOS)
+    # Windows requires Visual Studio build tools which are often not available
+    bcrypt_deps = 
+      case :os.type() do
+        {:win32, _} -> []
+        _ -> [{:bcrypt_elixir, "~> 3.0"}]
+      end
+
+    base_deps ++ bcrypt_deps
   end
 
   # Aliases are shortcuts or tasks specific to the current project.

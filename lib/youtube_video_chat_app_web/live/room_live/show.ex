@@ -41,6 +41,24 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       })
       
       Logger.info("   Tracked user, now presence: #{map_size(Presence.list("room:#{room.id}"))}")
+      
+      # Send join message from the joining user's own process (prevents duplicates)
+      unless is_guest do
+        join_message = %{
+          id: Ecto.UUID.generate(),
+          text: "#{user.username} joined the room",
+          username: "System",
+          color: "#888888",
+          timestamp: DateTime.utc_now(),
+          is_system: true
+        }
+        RoomServer.add_message(room.id, join_message)
+        PubSub.broadcast(
+          YoutubeVideoChatApp.PubSub,
+          "room:#{room.id}",
+          {:new_message, join_message}
+        )
+      end
     end
     
     # Get initial room state (now the server should be running)
@@ -98,6 +116,9 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:video_state, room_state.video_state)
     |> assign(:video_timestamp, current_timestamp)
     |> assign(:queue, room_state.queue)
+    |> assign(:dj_line, room_state[:dj_line] || [])
+    |> assign(:user_queues, room_state[:user_queues] || %{})
+    |> assign(:current_dj, room_state[:current_dj])
     |> assign(:is_host, is_host)
     |> assign(:show_chat, true)
     |> assign(:presences, %{})
@@ -913,6 +934,13 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   @impl true
+  def handle_info({:dj_line_updated, dj_line_info, current_dj}, socket) do
+    {:noreply, socket
+    |> assign(:dj_line, dj_line_info)
+    |> assign(:current_dj, current_dj)}
+  end
+
+  @impl true
   def handle_info({:reaction, reaction}, socket) do
     # Push event to show reaction animation
     {:noreply, push_event(socket, "show_reaction", reaction)}
@@ -922,55 +950,43 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff", payload: diff}, socket) do
     Logger.info("👥 Presence diff received - joins: #{map_size(diff.joins)}, leaves: #{map_size(diff.leaves)}")
     
-    # Handle joins - send join messages for registered users only
-    Enum.each(diff.joins, fn {_user_id, %{metas: [meta | _]}} ->
-      unless meta.is_guest do
-        # Only send join messages for registered users
-        message = %{
-          id: Ecto.UUID.generate(),
-          text: "#{meta.username} joined the room",
-          username: "System",
-          color: "#888888",
-          timestamp: DateTime.utc_now(),
-          is_system: true
-        }
-        
-        # Store message in RoomServer
-        RoomServer.add_message(socket.assigns.room.id, message)
-        
-        # Broadcast to all viewers
-        PubSub.broadcast(
-          YoutubeVideoChatApp.PubSub,
-          "room:#{socket.assigns.room.id}",
-          {:new_message, message}
-        )
-      end
-    end)
-    
-    # Handle leaves - send leave messages for registered users only
-    Enum.each(diff.leaves, fn {user_id, %{metas: metas}} ->
-      # Get the meta from leaves to check if guest
+    # Handle leaves - only ONE remaining client should send the leave message
+    # Join messages are handled in mount/3 to prevent duplicates
+    # For leaves, we pick the client with the lowest user_id among remaining presences
+    # to be the single broadcaster, preventing duplicates
+    Enum.each(diff.leaves, fn {_user_id, %{metas: metas}} ->
       meta = List.first(metas)
       unless meta.is_guest do
-        # Only send leave messages for registered users
-        message = %{
-          id: Ecto.UUID.generate(),
-          text: "#{meta.username} left the room",
-          username: "System",
-          color: "#888888",
-          timestamp: DateTime.utc_now(),
-          is_system: true
-        }
+        # Determine remaining presences after applying this diff
+        remaining = socket.assigns.presences
+        |> handle_leaves_map(diff.leaves)
+        |> handle_joins_map(diff.joins)
         
-        # Store message in RoomServer
-        RoomServer.add_message(socket.assigns.room.id, message)
+        # Only the client with the lowest user_id broadcasts the leave message
+        my_id = socket.assigns.user.id
+        remaining_ids = Map.keys(remaining) |> Enum.sort()
         
-        # Broadcast to all viewers
-        PubSub.broadcast(
-          YoutubeVideoChatApp.PubSub,
-          "room:#{socket.assigns.room.id}",
-          {:new_message, message}
-        )
+        is_broadcaster = case remaining_ids do
+          [first | _] -> first == my_id
+          [] -> false  # No one left to broadcast
+        end
+        
+        if is_broadcaster do
+          message = %{
+            id: Ecto.UUID.generate(),
+            text: "#{meta.username} left the room",
+            username: "System",
+            color: "#888888",
+            timestamp: DateTime.utc_now(),
+            is_system: true
+          }
+          RoomServer.add_message(socket.assigns.room.id, message)
+          PubSub.broadcast(
+            YoutubeVideoChatApp.PubSub,
+            "room:#{socket.assigns.room.id}",
+            {:new_message, message}
+          )
+        end
       end
     end)
     
