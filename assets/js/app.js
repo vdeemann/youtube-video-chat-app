@@ -1,5 +1,14 @@
-// Simple synchronized playback system
-// Server is source of truth - each client plays independently
+// ==========================================================================
+// Simplified synchronized playback system
+//
+// The server sends ONE event type: "sync_player" containing:
+//   { media, started_at, server_now, is_host }
+//
+// The client computes seek position as:
+//   position = (Date.now() - started_at) / 1000
+//
+// That's it.  No dedup, no dual paths, no data-attribute fallback.
+// ==========================================================================
 
 import "phoenix_html"
 import {Socket} from "phoenix"
@@ -12,35 +21,122 @@ let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("
 // GLOBAL STATE
 // ===========================================
 window.playerState = {
-  videoStartedAt: null,  // Server timestamp when track started (ms)
-  localPlaybackStartedAt: null, // When playback actually started on THIS client (ms)
+  startedAt: null,        // ms epoch — when track position 0 started
   mediaId: null,
   mediaType: null,
   isHost: false,
   playerReady: false,
   endTriggered: false,
-  ytPlayer: null,  // YouTube player instance
-  isNewTrack: false, // Flag to indicate this is a freshly started track (not mid-join)
-  volume: parseInt(localStorage.getItem('playerVolume') || '80', 10) // Persisted volume (0-100)
+  ytPlayer: null,
+  volume: parseInt(localStorage.getItem('playerVolume') || '80', 10)
 };
 
 // ===========================================
-// VOLUME CONTROL
+// USER INTERACTION TRACKING (autoplay policy)
 // ===========================================
-// Debounced save to localStorage (avoid writing on every pixel of slider movement)
-let _volumeSaveTimeout = null;
-function _debouncedSaveVolume(volume) {
-  if (_volumeSaveTimeout) clearTimeout(_volumeSaveTimeout);
-  _volumeSaveTimeout = setTimeout(() => {
-    localStorage.setItem('playerVolume', volume.toString());
-  }, 150);
+// Browsers block unmuted autoplay until the user interacts with the page.
+// We track this so we can start muted on fresh loads and show an overlay.
+window._userHasInteracted = false;
+
+function markUserInteracted() {
+  if (window._userHasInteracted) return;
+  window._userHasInteracted = true;
+  hideUnmuteOverlay();
+
+  // Unmute the current player now that we have a user gesture
+  try {
+    const yt = window.playerState.ytPlayer;
+    if (yt && typeof yt.unMute === 'function') {
+      yt.setVolume(window.playerState.volume);
+      yt.unMute();
+      // Force the audio stream to re-engage by nudging playback
+      const cur = yt.getCurrentTime?.();
+      if (cur != null && cur > 0) yt.seekTo(cur, true);
+      yt.playVideo();
+    }
+  } catch (_) {}
+  try {
+    if (window.scWidget) {
+      window.scWidget.setVolume(window.playerState.volume);
+      // Nudge SoundCloud to re-engage audio by pausing and immediately playing
+      window.scWidget.play();
+    }
+  } catch (_) {}
 }
 
-// Throttled player volume application (avoid hammering player APIs on every input event)
-let _volumeApplyTimeout = null;
-let _pendingVolume = null;
-function _throttledApplyVolume(volume) {
-  _pendingVolume = volume;
+// Any user interaction on the page counts
+['click', 'keydown', 'touchstart'].forEach(evt => {
+  document.addEventListener(evt, markUserInteracted, { once: false, capture: true });
+});
+
+// ===========================================
+// UNMUTE OVERLAY
+// ===========================================
+function showUnmuteOverlay() {
+  if (document.getElementById('unmute-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'unmute-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:90;display:flex;align-items:center;justify-content:center;pointer-events:none;';
+  overlay.innerHTML = `
+    <button id="unmute-btn" style="
+      pointer-events:auto;
+      display:flex;align-items:center;gap:10px;
+      padding:14px 28px;
+      background:rgba(0,0,0,0.85);
+      backdrop-filter:blur(12px);
+      border:1px solid rgba(168,85,247,0.5);
+      border-radius:9999px;
+      color:#fff;
+      font-size:16px;
+      font-weight:600;
+      cursor:pointer;
+      box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 20px rgba(168,85,247,0.2);
+      transition:all 0.2s;
+    ">
+      <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="flex-shrink:0;">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+      </svg>
+      Click to unmute
+    </button>
+  `;
+  document.body.appendChild(overlay);
+
+  // Pulse animation on the button
+  const btn = document.getElementById('unmute-btn');
+  if (btn) {
+    btn.addEventListener('mouseenter', () => {
+      btn.style.background = 'rgba(168,85,247,0.3)';
+      btn.style.borderColor = 'rgba(168,85,247,0.8)';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = 'rgba(0,0,0,0.85)';
+      btn.style.borderColor = 'rgba(168,85,247,0.5)';
+    });
+  }
+}
+
+function hideUnmuteOverlay() {
+  const overlay = document.getElementById('unmute-overlay');
+  if (overlay) {
+    overlay.style.transition = 'opacity 0.3s';
+    overlay.style.opacity = '0';
+    setTimeout(() => overlay.remove(), 300);
+  }
+}
+
+// ===========================================
+// VOLUME CONTROL (unchanged)
+// ===========================================
+let _volumeSaveTimeout = null;
+function _debouncedSaveVolume(vol) {
+  clearTimeout(_volumeSaveTimeout);
+  _volumeSaveTimeout = setTimeout(() => localStorage.setItem('playerVolume', vol.toString()), 150);
+}
+
+let _volumeApplyTimeout = null, _pendingVolume = null;
+function _throttledApplyVolume(vol) {
+  _pendingVolume = vol;
   if (!_volumeApplyTimeout) {
     _volumeApplyTimeout = setTimeout(() => {
       applyVolumeToPlayer(_pendingVolume);
@@ -52,56 +148,35 @@ function _throttledApplyVolume(volume) {
 window.setPlayerVolume = function(value) {
   const volume = Math.max(0, Math.min(100, parseInt(value, 10)));
   window.playerState.volume = volume;
-  
-  // Lightweight UI updates (no innerHTML thrashing)
-  const volumeValue = document.getElementById('volume-value');
-  if (volumeValue) volumeValue.textContent = volume + '%';
-  
-  // Only update icon when crossing a threshold (0, 50) to avoid constant innerHTML rewrites
-  const prevVolume = window.playerState._prevIconVolume || -1;
-  const iconChanged = (volume === 0) !== (prevVolume === 0) || 
-                      (volume > 0 && volume < 50) !== (prevVolume > 0 && prevVolume < 50) ||
-                      (volume >= 50) !== (prevVolume >= 50);
-  
+  const el = document.getElementById('volume-value');
+  if (el) el.textContent = volume + '%';
+
+  const prev = window.playerState._prevIconVolume || -1;
+  const iconChanged = (volume === 0) !== (prev === 0) ||
+    (volume > 0 && volume < 50) !== (prev > 0 && prev < 50) ||
+    (volume >= 50) !== (prev >= 50);
+
   if (iconChanged) {
-    const volumeIcon = document.getElementById('volume-icon');
-    if (volumeIcon) {
-      if (volume === 0) {
-        volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
-      } else if (volume < 50) {
-        volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
-      } else {
-        volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
-      }
+    const icon = document.getElementById('volume-icon');
+    if (icon) {
+      if (volume === 0)
+        icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
+      else if (volume < 50)
+        icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
+      else
+        icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
     }
     window.playerState._prevIconVolume = volume;
   }
-  
-  // Debounce localStorage write
   _debouncedSaveVolume(volume);
-  
-  // Throttle player API calls
   _throttledApplyVolume(volume);
 };
 
-function applyVolumeToPlayer(volume) {
-  // YouTube
-  if (window.playerState.ytPlayer && typeof window.playerState.ytPlayer.setVolume === 'function') {
-    try {
-      window.playerState.ytPlayer.setVolume(volume);
-    } catch (e) { /* player not ready */ }
-  }
-  
-  // SoundCloud
-  if (window.scWidget && typeof window.scWidget.setVolume === 'function') {
-    try {
-      window.scWidget.setVolume(volume);
-    } catch (e) { /* widget not ready */ }
-  }
-  
+function applyVolumeToPlayer(vol) {
+  try { window.playerState.ytPlayer?.unMute?.(); window.playerState.ytPlayer?.setVolume?.(vol); } catch (_) {}
+  try { window.scWidget?.setVolume?.(vol); } catch (_) {}
 }
 
-// Toggle mute
 window.toggleMute = function() {
   if (window.playerState.volume > 0) {
     window.playerState.previousVolume = window.playerState.volume;
@@ -111,125 +186,110 @@ window.toggleMute = function() {
   }
 };
 
-// Toggle volume popup
 window.toggleVolumePopup = function() {
-  const popup = document.getElementById('volume-popup');
-  if (popup) {
-    popup.classList.toggle('hidden');
-  }
+  document.getElementById('volume-popup')?.classList.toggle('hidden');
 };
 
-// Close volume popup when clicking outside
 document.addEventListener('click', (e) => {
-  const volumeControl = document.getElementById('volume-control');
+  const vc = document.getElementById('volume-control');
   const popup = document.getElementById('volume-popup');
-  
-  if (volumeControl && popup && !volumeControl.contains(e.target)) {
-    popup.classList.add('hidden');
-  }
+  if (vc && popup && !vc.contains(e.target)) popup.classList.add('hidden');
 });
 
 // ===========================================
-// LOAD YOUTUBE IFRAME API
+// YOUTUBE IFRAME API
 // ===========================================
 function loadYouTubeAPI() {
-  if (window.YT && window.YT.Player) {
-    console.log("[YouTube] API already loaded");
-    return Promise.resolve();
-  }
-  
+  if (window.YT?.Player) return Promise.resolve();
   return new Promise((resolve) => {
     if (document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-      // Script already added, wait for it
-      const checkYT = setInterval(() => {
-        if (window.YT && window.YT.Player) {
-          clearInterval(checkYT);
-          resolve();
-        }
-      }, 100);
+      const check = setInterval(() => { if (window.YT?.Player) { clearInterval(check); resolve(); } }, 100);
       return;
     }
-    
-    window.onYouTubeIframeAPIReady = () => {
-      console.log("[YouTube] API loaded and ready");
-      resolve();
-    };
-    
+    window.onYouTubeIframeAPIReady = () => resolve();
     const tag = document.createElement('script');
     tag.src = 'https://www.youtube.com/iframe_api';
-    const firstScript = document.getElementsByTagName('script')[0];
-    firstScript.parentNode.insertBefore(tag, firstScript);
+    document.getElementsByTagName('script')[0].parentNode.insertBefore(tag, document.getElementsByTagName('script')[0]);
   });
 }
-
-// Load YouTube API immediately
 loadYouTubeAPI();
 
 // ===========================================
-// CREATE PLAYER
-// Called when: 1) joining room with active track, 2) new track starts
+// SOUNDCLOUD API
 // ===========================================
-function createPlayer(media, serverStartedAt, isHost, isNewTrack) {
+(function() {
+  if (window.SC?.Widget) return;
+  const s = document.createElement('script');
+  s.src = 'https://w.soundcloud.com/player/api.js';
+  document.head.appendChild(s);
+})();
+
+// ===========================================
+// SYNC PLAYER — the ONE entry point
+// ===========================================
+// Called on mount and whenever the server broadcasts a state change.
+// Decides: create new player, or do nothing (queue-only update).
+function syncPlayer(media, startedAt, serverNow, isHost) {
+  console.log("[syncPlayer]", { type: media?.type, id: media?.media_id, startedAt, isHost });
+
+  window.playerState.isHost = isHost;
+
   if (!media) {
-    console.log("[Player] No media, showing placeholder");
     showPlaceholder();
     return;
   }
-  
-  console.log("[Player] Creating player:", media.title, "isHost:", isHost, "isNewTrack:", isNewTrack);
-  
+
   const container = document.getElementById('media-container');
   if (!container) return;
-  
-  const now = Date.now();
-  let elapsed = 0;
-  
-  if (isNewTrack) {
-    // New track starting - always begin from 0, no elapsed time calculation
-    elapsed = 0;
-    console.log(`[Player] New track - starting from beginning`);
-  } else if (serverStartedAt) {
-    // Joining mid-playback - calculate where we should be
-    elapsed = Math.max(0, Math.floor((now - serverStartedAt) / 1000));
-    console.log(`[Player] Joining mid-playback, seeking to: ${elapsed}s`);
+
+  // If this is the exact same queue entry already playing AND the player DOM still exists, don't recreate.
+  // We compare the unique track id (UUID), not media_id, so duplicate tracks in the queue
+  // (same video/song queued multiple times) are correctly treated as different entries.
+  // After LiveView navigation the DOM is destroyed but window.playerState persists,
+  // so we must verify the actual player element is still in the page.
+  const existingPlayer = document.getElementById('youtube-player-container') || document.getElementById('active-player');
+  if (media.id && window.playerState.trackId === media.id && window.playerState.playerReady && existingPlayer) {
+    return;
   }
-  
-  console.log(`[Player] Server started at: ${serverStartedAt}, final start position: ${elapsed}s, isNewTrack: ${isNewTrack}`);
-  
-  // Destroy existing YouTube player if any
-  if (window.playerState.ytPlayer) {
-    try {
-      window.playerState.ytPlayer.destroy();
-    } catch(e) {}
-    window.playerState.ytPlayer = null;
-  }
-  
-  // Store state
-  // For new tracks, use current time as the start time (ignoring server timestamp)
-  // This ensures playback starts from 0 and sync is based on when THIS client started
-  // IMPORTANT: Preserve the volume setting from localStorage
+
+  // Compute seek position:  how far into the track are we?
+  // started_at is server ms epoch when position 0 began.
+  // Adjust for clock difference: offset = Date.now() - serverNow
+  const clockOffset = Date.now() - (serverNow || Date.now());
+  const seekPosition = startedAt ? Math.max(0, (Date.now() - startedAt - clockOffset) / 1000) : 0;
+
+  // Destroy old player
+  try { window.playerState.ytPlayer?.destroy(); } catch (_) {}
+  window.scWidget = null;
+
   const savedVolume = parseInt(localStorage.getItem('playerVolume') || '80', 10);
+  // If user hasn't interacted yet, we must start muted (browser policy).
+  // Once they click the overlay or anything on the page, we unmute.
+  const startMuted = !window._userHasInteracted;
   window.playerState = {
-    videoStartedAt: isNewTrack ? now : serverStartedAt,
-    localPlaybackStartedAt: now,
+    startedAt: startedAt,
+    trackId: media.id,
     mediaId: media.media_id,
     mediaType: media.type,
     isHost: isHost,
     playerReady: false,
     endTriggered: false,
     ytPlayer: null,
-    isNewTrack: isNewTrack,
-    _playbackAnchored: false, // Will be set true when actual playback begins
     volume: savedVolume,
-    previousVolume: window.playerState.previousVolume || savedVolume
+    previousVolume: window.playerState.previousVolume || savedVolume,
+    _startMuted: startMuted,
+    _createdAt: Date.now()  // Grace period: don't sync-seek until player has had time to load
   };
-  
-  // Build player HTML
-  let playerHtml;
-  
+
+  // Show unmute overlay if we're starting muted
+  if (startMuted) {
+    showUnmuteOverlay();
+  } else {
+    hideUnmuteOverlay();
+  }
+
   if (media.type === "youtube") {
-    // For YouTube, we create a div that the API will replace with an iframe
-    playerHtml = `
+    container.innerHTML = `
       <div class="absolute inset-0 bg-black" id="player-host">
         <div class="absolute left-0 right-0" style="top: 76px; bottom: 100px;">
           <div class="w-full h-full flex items-center justify-center">
@@ -238,176 +298,160 @@ function createPlayer(media, serverStartedAt, isHost, isNewTrack) {
             </div>
           </div>
         </div>
-      </div>
-    `;
-    
-    container.innerHTML = playerHtml;
-    
-    // Initialize YouTube player with the API
-    initYouTubePlayer(media.media_id, elapsed, isHost);
-    
+      </div>`;
+    initYouTubePlayer(media.media_id, Math.floor(seekPosition));
   } else if (media.type === "soundcloud") {
-    // Add unique identifier to make each iframe distinct per tab
-    const uniqueId = `${now}_${Math.random().toString(36).substr(2, 9)}`;
-    let embedUrl = media.embed_url + `&_t=${uniqueId}`;
-    
-    playerHtml = `
+    const uid = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    container.innerHTML = `
       <div class="absolute inset-0 bg-gradient-to-br from-orange-900 via-red-900 to-purple-900 flex items-center justify-center" id="player-host">
         <div class="w-full h-full flex flex-col items-center justify-center px-6" style="padding-top: 70px; padding-bottom: 100px;">
-          <!-- SoundCloud Player - Centered -->
           <div class="w-full flex items-center justify-center" style="max-width: 850px; max-height: 500px; height: 100%;">
-            <iframe
-              id="active-player"
-              name="sc-player-${uniqueId}"
-              src="${embedUrl}"
-              frameborder="0"
-              allow="autoplay; encrypted-media"
-              class="w-full h-full rounded-xl shadow-2xl"
-              loading="eager"
-            ></iframe>
+            <iframe id="active-player" name="sc-player-${uid}" src="${media.embed_url}&_t=${uid}"
+              frameborder="0" allow="autoplay; encrypted-media"
+              class="w-full h-full rounded-xl shadow-2xl" loading="eager"></iframe>
           </div>
         </div>
-      </div>
-    `;
-    
-    container.innerHTML = playerHtml;
-    
-    // Setup SoundCloud player - use load event instead of arbitrary delay
+      </div>`;
     const scIframe = document.getElementById('active-player');
     if (scIframe) {
-      scIframe.addEventListener('load', () => {
-        console.log('[SoundCloud] iframe loaded, initializing widget');
-        initSoundCloud(elapsed, isHost);
-      });
-      // Fallback if load event doesn't fire (some browsers)
-      setTimeout(() => {
-        if (!window.playerState.playerReady) {
-          console.log('[SoundCloud] Fallback init after timeout');
-          initSoundCloud(elapsed, isHost);
-        }
-      }, 3000);
+      scIframe.addEventListener('load', () => initSoundCloud(seekPosition));
+      setTimeout(() => { if (!window.playerState.playerReady) initSoundCloud(seekPosition); }, 3000);
     }
-    
   }
 }
 
 // ===========================================
-// YOUTUBE PLAYER INITIALIZATION (Official API)
+// YOUTUBE PLAYER
 // ===========================================
-function initYouTubePlayer(videoId, startSeconds, isHost) {
-  console.log("[YouTube] Initializing player for video:", videoId, "start:", startSeconds, "isHost:", isHost);
-  
-  // Make sure API is loaded
-  if (!window.YT || !window.YT.Player) {
-    console.log("[YouTube] API not ready, waiting...");
-    loadYouTubeAPI().then(() => {
-      initYouTubePlayer(videoId, startSeconds, isHost);
-    });
+function initYouTubePlayer(videoId, startSeconds) {
+  if (!window.YT?.Player) {
+    loadYouTubeAPI().then(() => initYouTubePlayer(videoId, startSeconds));
     return;
   }
-  
-  const containerEl = document.getElementById('youtube-player-container');
-  if (!containerEl) {
-    console.error("[YouTube] Container not found");
-    return;
-  }
-  
-  // Get container dimensions
-  const width = containerEl.clientWidth || 800;
-  const height = containerEl.clientHeight || 450;
-  
-  try {
-    window.playerState.ytPlayer = new YT.Player('youtube-player-container', {
-      width: width,
-      height: height,
-      videoId: videoId,
-      playerVars: {
-        autoplay: 1,
-        controls: 1,
-        rel: 0,
-        modestbranding: 1,
-        playsinline: 1,
-        start: startSeconds,
-        enablejsapi: 1,
-        origin: window.location.origin
+  const el = document.getElementById('youtube-player-container');
+  if (!el) return;
+
+  window.playerState.ytPlayer = new YT.Player('youtube-player-container', {
+    width: el.clientWidth || 800,
+    height: el.clientHeight || 450,
+    videoId,
+    playerVars: { autoplay: 1, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, start: startSeconds, enablejsapi: 1, origin: window.location.origin },
+    events: {
+      onReady: (e) => {
+        window.playerState.playerReady = true;
+        if (window.playerState._startMuted) {
+          e.target.mute();
+          e.target.playVideo();
+        } else {
+          e.target.unMute();
+          e.target.setVolume(window.playerState.volume);
+          e.target.playVideo();
+        }
+        // Send immediate progress report so the server recalibrates started_at right away
+        setTimeout(() => {
+          try {
+            const cur = e.target.getCurrentTime();
+            const dur = e.target.getDuration();
+            if (cur > 0) pushVideoProgress(cur, dur || 0);
+          } catch (_) {}
+        }, 1000);
       },
-      events: {
-        onReady: (event) => {
-          console.log("[YouTube] Player ready");
-          window.playerState.playerReady = true;
-          // Apply saved volume
-          const savedVolume = window.playerState.volume;
-          event.target.setVolume(savedVolume);
-          console.log('[YouTube] Applied saved volume:', savedVolume);
-          event.target.playVideo();
-        },
-        onStateChange: (event) => {
-          const stateNames = {
-            '-1': 'unstarted',
-            '0': 'ended',
-            '1': 'playing',
-            '2': 'paused',
-            '3': 'buffering',
-            '5': 'cued'
-          };
-          console.log("[YouTube] State changed to:", event.data, `(${stateNames[event.data] || 'unknown'})`);
-          
-          // State 1 = PLAYING - anchor sync timeline to actual playback start
-          if (event.data === 1 && !window.playerState._playbackAnchored) {
-            window.playerState._playbackAnchored = true;
-            const actualPos = event.target.getCurrentTime();
-            const now = Date.now();
-            // Set videoStartedAt so that (now - videoStartedAt)/1000 == actualPos
-            window.playerState.videoStartedAt = now - (actualPos * 1000);
-            window.playerState.localPlaybackStartedAt = now;
-            console.log(`[YouTube] ▶ Playback anchored: position=${actualPos.toFixed(1)}s, videoStartedAt adjusted`);
-          }
-          
-          // State 0 = ENDED
-          if (event.data === 0) {
-            console.log("[YouTube] VIDEO ENDED! isHost:", window.playerState.isHost, "endTriggered:", window.playerState.endTriggered);
-            if (window.playerState.isHost && !window.playerState.endTriggered) {
-              console.log("[YouTube] 🚀 Host triggering queue advance!");
-              window.playerState.endTriggered = true;
-              pushVideoEnded();
-            }
-          }
-          
-          // State 2 = PAUSED - auto-resume if not ended
-          if (event.data === 2 && !window.playerState.endTriggered) {
-            console.log("[YouTube] Paused - auto-resuming");
-            setTimeout(() => {
-              if (window.playerState.ytPlayer && !window.playerState.endTriggered) {
-                window.playerState.ytPlayer.playVideo();
-              }
-            }, 500);
-          }
-        },
-        onError: (event) => {
-          console.error("[YouTube] Player error:", event.data);
+      onStateChange: (e) => {
+        // Track ended
+        if (e.data === 0 && !window.playerState.endTriggered) {
+          window.playerState.endTriggered = true;
+          pushVideoEnded();
+        }
+        // Auto-resume if paused unexpectedly
+        if (e.data === 2 && !window.playerState.endTriggered) {
+          setTimeout(() => { window.playerState.ytPlayer?.playVideo?.(); }, 500);
+        }
+      },
+      onError: (e) => {
+        console.error("[YT Player] Error:", e.data);
+        // On error (video unavailable, embed blocked, etc.), advance the queue
+        if (!window.playerState.endTriggered) {
+          window.playerState.endTriggered = true;
+          setTimeout(() => pushVideoEnded(), 1000);
         }
       }
-    });
-    
-    console.log("[YouTube] Player created successfully");
-  } catch(e) {
-    console.error("[YouTube] Error creating player:", e);
-  }
+    }
+  });
 }
 
-function showPlaceholder() {
-  const container = document.getElementById('media-container');
-  if (!container) return;
-  
-  // Destroy existing YouTube player if any
-  if (window.playerState.ytPlayer) {
-    try {
-      window.playerState.ytPlayer.destroy();
-    } catch(e) {}
-    window.playerState.ytPlayer = null;
+// ===========================================
+// SOUNDCLOUD PLAYER
+// ===========================================
+function initSoundCloud(startPosition) {
+  const iframe = document.getElementById('active-player');
+  if (!iframe || !window.SC?.Widget) {
+    setTimeout(() => initSoundCloud(startPosition), 200);
+    return;
   }
-  
-  container.innerHTML = `
+  if (window.playerState.playerReady) return;
+
+  const widget = window.SC.Widget(iframe);
+
+  widget.bind(window.SC.Widget.Events.READY, () => {
+    window.playerState.playerReady = true;
+    if (window.playerState._startMuted) {
+      widget.setVolume(0);
+    } else {
+      widget.setVolume(window.playerState.volume);
+    }
+    if (startPosition > 0) widget.seekTo(startPosition * 1000);
+    widget.play();
+    // Send immediate progress report so the server recalibrates started_at right away
+    setTimeout(() => {
+      try {
+        widget.getPosition((pos) => {
+          const cur = pos / 1000;
+          if (cur > 0) {
+            widget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
+          }
+        });
+      } catch (_) {}
+    }, 1500);
+  });
+
+  widget.bind(window.SC.Widget.Events.PLAY, () => {
+    // If user interacted while the widget was loading, apply volume now
+    if (window._userHasInteracted) {
+      try { widget.setVolume(window.playerState.volume); } catch (_) {}
+    }
+  });
+
+  widget.bind(window.SC.Widget.Events.FINISH, () => {
+    if (!window.playerState.endTriggered) {
+      window.playerState.endTriggered = true;
+      pushVideoEnded();
+    }
+  });
+
+  widget.bind(window.SC.Widget.Events.PLAY_PROGRESS, (data) => {
+    if (data.relativePosition > 0.99 && !window.playerState.endTriggered) {
+      window.playerState.endTriggered = true;
+      pushVideoEnded();
+    }
+  });
+
+  window.scWidget = widget;
+}
+
+// ===========================================
+// PLACEHOLDER
+// ===========================================
+function showPlaceholder() {
+  try { window.playerState.ytPlayer?.destroy(); } catch (_) {}
+  window.playerState.ytPlayer = null;
+  window.scWidget = null;
+  window.playerState.mediaId = null;
+  window.playerState.startedAt = null;
+  window.playerState.playerReady = false;
+  hideUnmuteOverlay();
+
+  const c = document.getElementById('media-container');
+  if (c) c.innerHTML = `
     <div class="flex items-center justify-center w-full h-full bg-gray-900" id="no-media-placeholder">
       <div class="text-center">
         <svg class="w-24 h-24 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -417,304 +461,194 @@ function showPlaceholder() {
         <p class="text-white text-xl mb-2">No media playing</p>
         <p class="text-gray-400 text-sm">Add a YouTube or SoundCloud track to get started</p>
       </div>
-    </div>
-  `;
-  
-  window.playerState.videoStartedAt = null;
-  window.playerState.mediaId = null;
+    </div>`;
 }
 
 // ===========================================
-// SOUNDCLOUD INITIALIZATION
-// ===========================================
-function initSoundCloud(startPosition, isHost) {
-  const iframe = document.getElementById('active-player');
-  if (!iframe) return;
-  
-  if (!window.SC?.Widget) {
-    console.log("[SoundCloud] API not loaded, retrying...");
-    setTimeout(() => initSoundCloud(startPosition, isHost), 200);
-    return;
-  }
-  
-  // Prevent double-initialization
-  if (window.playerState.playerReady) {
-    console.log("[SoundCloud] Already initialized, skipping");
-    return;
-  }
-  
-  console.log("[SoundCloud] Initializing, start position:", startPosition);
-  
-  const widget = window.SC.Widget(iframe);
-  
-  widget.bind(window.SC.Widget.Events.READY, () => {
-    console.log("[SoundCloud] Ready");
-    window.playerState.playerReady = true;
-    
-    // Apply saved volume
-    const savedVolume = window.playerState.volume;
-    widget.setVolume(savedVolume);
-    console.log('[SoundCloud] Applied saved volume:', savedVolume);
-    
-    if (startPosition > 0) {
-      // Mid-join: seek first, then play
-      widget.seekTo(startPosition * 1000);
-      widget.play();
-    } else {
-      // New track: just play from the start
-      widget.play();
-    }
-  });
-  
-  // Anchor sync timeline when actual playback starts
-  widget.bind(window.SC.Widget.Events.PLAY, () => {
-    if (!window.playerState._playbackAnchored) {
-      window.playerState._playbackAnchored = true;
-      widget.getPosition((posMs) => {
-        const actualPos = posMs / 1000;
-        const now = Date.now();
-        window.playerState.videoStartedAt = now - (actualPos * 1000);
-        window.playerState.localPlaybackStartedAt = now;
-        console.log(`[SoundCloud] ▶ Playback anchored: position=${actualPos.toFixed(1)}s, videoStartedAt adjusted`);
-      });
-    }
-  });
-  
-  widget.bind(window.SC.Widget.Events.FINISH, () => {
-    console.log("[SoundCloud] FINISH event fired, isHost:", window.playerState.isHost);
-    if (window.playerState.isHost && !window.playerState.endTriggered) {
-      console.log("[SoundCloud] Finished - advancing queue");
-      window.playerState.endTriggered = true;
-      pushVideoEnded();
-    }
-  });
-  
-  // Also track progress to catch near-end
-  widget.bind(window.SC.Widget.Events.PLAY_PROGRESS, (data) => {
-    if (data.relativePosition > 0.99 && window.playerState.isHost && !window.playerState.endTriggered) {
-      console.log("[SoundCloud] 99% complete - triggering end");
-      window.playerState.endTriggered = true;
-      pushVideoEnded();
-    }
-  });
-  
-  // Store widget reference for sync
-  window.scWidget = widget;
-}
-
-// ===========================================
-// PUSH VIDEO ENDED TO SERVER
+// PUSH EVENTS TO SERVER
 // ===========================================
 function pushVideoEnded() {
-  console.log("[Player] 🔔 Pushing video_ended event to server");
-  
-  // Method 1: Try using the hook's pushEvent
-  const hookEl = document.getElementById('room-container');
-  if (hookEl && hookEl._phxHookPushEvent) {
-    console.log("[Player] Using hook pushEvent method");
-    hookEl._phxHookPushEvent("video_ended", {});
+  console.log("[pushVideoEnded] Attempting to notify server");
+  // Primary: use the window-level reference set by RoomHook
+  if (window._roomHookPushEvent) {
+    window._roomHookPushEvent("video_ended", {});
     return;
   }
-  
-  // Method 2: Find the LiveView and push directly
+  // Fallback 1: DOM element reference
+  const hook = document.getElementById('room-container');
+  if (hook?._phxHookPushEvent) {
+    hook._phxHookPushEvent("video_ended", {});
+    return;
+  }
+  // Fallback 2: find view directly
   if (window.liveSocket) {
     const view = document.querySelector('[data-phx-main]');
-    if (view) {
-      const viewInstance = window.liveSocket.getViewByEl(view);
-      if (viewInstance) {
-        console.log("[Player] Using LiveView pushEvent method");
-        viewInstance.pushEvent("video_ended", {}, () => {
-          console.log("[Player] video_ended event pushed successfully");
-        });
-        return;
-      }
-    }
+    const inst = view && window.liveSocket.getViewByEl(view);
+    if (inst) inst.pushEvent("video_ended", {});
   }
-  
-  console.error("[Player] ❌ Could not push video_ended event - no method available");
+}
+
+function pushVideoProgress(currentTime, duration) {
+  if (window._roomHookPushEvent) {
+    window._roomHookPushEvent("video_progress", { current_time: currentTime, duration });
+    return;
+  }
+  const hook = document.getElementById('room-container');
+  if (hook?._phxHookPushEvent) {
+    hook._phxHookPushEvent("video_progress", { current_time: currentTime, duration });
+  }
 }
 
 // ===========================================
-// SYNC LOOP - Keep players in sync with server timeline
+// SYNC LOOP (every 1.5s) — drift correction + progress reports
 // ===========================================
 setInterval(() => {
-  if (!window.playerState.videoStartedAt || !window.playerState.playerReady) return;
-  if (window.playerState.endTriggered) return; // Don't sync after video ended
-  
-  // Don't sync until playback has actually started and been anchored
-  // This prevents the sync loop from seeking based on stale timestamps
-  // before the player has loaded, buffered, and begun playing
-  if (!window.playerState._playbackAnchored) return;
-  
-  // Additional grace period: don't sync for the first 5 seconds after anchoring
-  // to let the player settle into steady playback
-  const timeSinceAnchor = Date.now() - window.playerState.localPlaybackStartedAt;
-  if (timeSinceAnchor < 5000) return;
-  
-  const expectedPos = (Date.now() - window.playerState.videoStartedAt) / 1000;
-  
-  // YouTube sync using official API
+  if (!window.playerState.startedAt) return;
+  if (window.playerState.endTriggered) return;
+
+  const expected = (Date.now() - window.playerState.startedAt) / 1000;
+
+  // Safety: if the player never became ready but we're well past the
+  // estimated duration, tell the server the track ended so the queue advances.
+  // This catches cases where the player fails to initialize after rejoin.
+  if (!window.playerState.playerReady && expected > 200) {
+    console.log("[syncLoop] Player never became ready and track duration exceeded, forcing advance");
+    window.playerState.endTriggered = true;
+    pushVideoEnded();
+    return;
+  }
+
+  if (!window.playerState.playerReady) return;
+
+  // Grace period: don't drift-correct seeks for the first 5s after player creation,
+  // giving the player time to load and seek to the initial position.
+  // Progress reports are ALWAYS sent regardless of grace period.
+  const age = Date.now() - (window.playerState._createdAt || 0);
+  const inGracePeriod = age < 5000;
+
   if (window.playerState.mediaType === "youtube" && window.playerState.ytPlayer) {
     try {
-      const currentTime = window.playerState.ytPlayer.getCurrentTime();
-      const drift = Math.abs(expectedPos - currentTime);
-      
-      if (drift > 5) {
-        console.log(`[Sync] YouTube drift ${drift.toFixed(1)}s - resyncing`);
-        window.playerState.ytPlayer.seekTo(expectedPos, true);
+      const cur = window.playerState.ytPlayer.getCurrentTime();
+      const dur = window.playerState.ytPlayer.getDuration();
+      // If we know the real duration and we're past it, trigger end
+      if (dur > 0 && cur >= dur - 0.5 && !window.playerState.endTriggered) {
+        window.playerState.endTriggered = true;
+        pushVideoEnded();
+        return;
       }
-    } catch(e) {
-      // Player might not be ready yet
-    }
+      // Only drift-correct after grace period
+      if (!inGracePeriod && Math.abs(expected - cur) > 3) window.playerState.ytPlayer.seekTo(expected, true);
+      // Always report progress to keep the server's started_at calibrated
+      if (cur > 0) pushVideoProgress(cur, dur || 0);
+    } catch (_) {}
   }
-  
-  // SoundCloud sync
+
   if (window.playerState.mediaType === "soundcloud" && window.scWidget) {
     window.scWidget.isPaused((paused) => {
-      if (paused && !window.playerState.endTriggered) {
-        console.log("[Sync] SoundCloud paused - resuming");
-        window.scWidget.play();
-      }
+      if (paused && !window.playerState.endTriggered) window.scWidget.play();
     });
-    
     window.scWidget.getPosition((pos) => {
-      const current = pos / 1000;
-      const drift = Math.abs(expectedPos - current);
-      if (drift > 5) {
-        console.log(`[Sync] SoundCloud drift ${drift.toFixed(1)}s - resyncing`);
-        window.scWidget.seekTo(expectedPos * 1000);
+      const cur = pos / 1000;
+      // Only drift-correct after grace period
+      if (!inGracePeriod && Math.abs(expected - cur) > 3) window.scWidget.seekTo(expected * 1000);
+      // Always report progress to keep the server's started_at calibrated
+      if (cur > 0) {
+        window.scWidget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
       }
     });
   }
-  
-}, 3000);
-
-// ===========================================
-// LIVEVIEW EVENT HANDLERS
-// ===========================================
-window.addEventListener("phx:create_player", (e) => {
-  console.log("[Event] create_player received:", e.detail);
-  createPlayer(e.detail.media, e.detail.started_at, e.detail.is_host, e.detail.is_new_track !== false);
-});
-
-window.addEventListener("phx:set_host_status", (e) => {
-  console.log("[Event] set_host_status:", e.detail.is_host);
-  window.playerState.isHost = e.detail.is_host;
-});
-
-window.addEventListener("phx:show_reaction", (e) => {
-  const container = document.getElementById("reactions-container");
-  if (!container) return;
-  
-  const reaction = document.createElement("div");
-  reaction.className = "absolute animate-bounce-up text-5xl";
-  reaction.style.left = `${Math.random() * 100 - 50}px`; // Random position around center
-  reaction.style.textShadow = "0 0 10px rgba(255,255,255,0.5)";
-  reaction.textContent = e.detail.emoji;
-  container.appendChild(reaction);
-  setTimeout(() => reaction.remove(), 2500);
-});
-
-// ===========================================
-// LOAD SOUNDCLOUD API
-// ===========================================
-(function() {
-  if (window.SC?.Widget) return;
-  const script = document.createElement('script');
-  script.src = 'https://w.soundcloud.com/player/api.js';
-  document.head.appendChild(script);
-})();
+}, 1500);
 
 // ===========================================
 // LIVEVIEW HOOKS
 // ===========================================
 const ChatScroll = {
   mounted() {
-    // Restore scroll position if we saved one before unmount
     if (window._chatScrollPosition !== undefined) {
       this.el.scrollTop = window._chatScrollPosition;
-      // Only scroll to bottom if we were at the bottom before
-      if (window._chatWasAtBottom) {
-        this.scrollToBottom();
-      }
+      if (window._chatWasAtBottom) this.scrollToBottom();
     } else {
       this.scrollToBottom();
     }
-    this.lastMessageCount = this.getMessageCount();
+    this.lastCount = this.msgCount();
     this.observer = new MutationObserver(() => {
-      // Only scroll if new messages were added
-      const currentCount = this.getMessageCount();
-      if (currentCount > this.lastMessageCount && !this.isUserScrolled) {
-        this.scrollToBottom();
-      }
-      this.lastMessageCount = currentCount;
+      const c = this.msgCount();
+      if (c > this.lastCount && !this.userScrolled) this.scrollToBottom();
+      this.lastCount = c;
     });
     this.el.addEventListener('scroll', () => {
-      const isAtBottom = this.el.scrollHeight - this.el.scrollTop <= this.el.clientHeight + 50;
-      this.isUserScrolled = !isAtBottom;
-      // Continuously save scroll position
+      const atBottom = this.el.scrollHeight - this.el.scrollTop <= this.el.clientHeight + 50;
+      this.userScrolled = !atBottom;
       window._chatScrollPosition = this.el.scrollTop;
-      window._chatWasAtBottom = isAtBottom;
+      window._chatWasAtBottom = atBottom;
     });
     this.observer.observe(this.el, { childList: true, subtree: true });
   },
   beforeUpdate() {
-    // Save scroll position before LiveView updates
     window._chatScrollPosition = this.el.scrollTop;
     window._chatWasAtBottom = this.el.scrollHeight - this.el.scrollTop <= this.el.clientHeight + 50;
-    this.savedMessageCount = this.getMessageCount();
+    this.savedCount = this.msgCount();
   },
   updated() {
-    // Restore scroll position after update
-    const currentCount = this.getMessageCount();
-    if (currentCount === this.savedMessageCount && window._chatScrollPosition !== undefined) {
-      // No new messages, restore scroll position
+    const c = this.msgCount();
+    if (c === this.savedCount && window._chatScrollPosition !== undefined) {
       this.el.scrollTop = window._chatScrollPosition;
-    } else if (currentCount > this.savedMessageCount && !this.isUserScrolled) {
-      // New messages, scroll to bottom
+    } else if (c > this.savedCount && !this.userScrolled) {
       this.scrollToBottom();
     }
-    this.lastMessageCount = currentCount;
+    this.lastCount = c;
   },
   destroyed() {
-    // Save scroll position when destroyed (e.g., when queue toggle causes re-render)
     window._chatScrollPosition = this.el.scrollTop;
     window._chatWasAtBottom = this.el.scrollHeight - this.el.scrollTop <= this.el.clientHeight + 50;
-    if (this.observer) this.observer.disconnect();
+    this.observer?.disconnect();
   },
-  getMessageCount() {
-    const container = this.el.querySelector('#messages-container');
-    return container ? container.children.length : 0;
-  },
+  msgCount() { return this.el.querySelector('#messages-container')?.children.length || 0; },
   scrollToBottom() { this.el.scrollTop = this.el.scrollHeight; }
 };
 
-const VideoEndedPusher = {
+const RoomHook = {
   mounted() {
-    // Store reference to this hook's pushEvent on the element
-    this.el._phxHookPushEvent = (event, payload) => {
-      console.log("[Hook] Pushing event via hook:", event);
-      this.pushEvent(event, payload);
-    };
-    console.log("[Hook] VideoEndedPusher mounted and ready");
+    // Give pushEvent access to the rest of the JS
+    this.el._phxHookPushEvent = (event, payload) => this.pushEvent(event, payload);
+    // Also store a reference on window so pushVideoEnded always works
+    window._roomHookPushEvent = (event, payload) => this.pushEvent(event, payload);
+
+    // The ONE event handler for playback state
+    this.handleEvent("sync_player", (data) => {
+      syncPlayer(data.media, data.started_at, data.server_now, data.is_host);
+    });
+
+    this.handleEvent("force_play_soundcloud", () => {
+      try { window.scWidget?.play?.(); } catch(_) {}
+    });
+
+    this.handleEvent("show_reaction", (data) => {
+      const c = document.getElementById("reactions-container");
+      if (!c) return;
+      const r = document.createElement("div");
+      r.className = "absolute animate-bounce-up text-5xl";
+      r.style.left = `${Math.random() * 100 - 50}px`;
+      r.style.textShadow = "0 0 10px rgba(255,255,255,0.5)";
+      r.textContent = data.emoji;
+      c.appendChild(r);
+      setTimeout(() => r.remove(), 2500);
+    });
+  },
+  destroyed() {
+    window._roomHookPushEvent = null;
   }
 };
 
 const ClearOnSubmit = {
   mounted() {
     this.el.addEventListener("submit", () => {
-      // Clear input after a tiny delay to let the form submit
-      setTimeout(() => {
-        const input = this.el.querySelector("input[type='text']");
-        if (input) {
-          input.value = "";
-        }
-      }, 10);
+      setTimeout(() => { const i = this.el.querySelector("input[type='text']"); if (i) i.value = ""; }, 10);
     });
   }
 };
 
-let Hooks = { ChatScroll, VideoEndedPusher, ClearOnSubmit };
+let Hooks = { ChatScroll, RoomHook, ClearOnSubmit };
 
 let liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},
@@ -722,86 +656,22 @@ let liveSocket = new LiveSocket("/live", Socket, {
 });
 
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"});
-window.addEventListener("phx:page-loading-start", _info => topbar.show(300));
-window.addEventListener("phx:page-loading-stop", _info => topbar.hide());
+window.addEventListener("phx:page-loading-start", () => topbar.show(300));
+window.addEventListener("phx:page-loading-stop", () => topbar.hide());
 
 liveSocket.connect();
 window.liveSocket = liveSocket;
 
-// Function to initialize volume UI with saved value
-function initializeVolumeUI() {
-  const savedVolume = parseInt(localStorage.getItem('playerVolume') || '80', 10);
-  
-  // Make sure playerState has the correct volume
-  if (window.playerState) {
-    window.playerState.volume = savedVolume;
-  }
-  
+// ===========================================
+// VOLUME UI INIT
+// ===========================================
+function initVolumeUI() {
+  const vol = parseInt(localStorage.getItem('playerVolume') || '80', 10);
+  if (window.playerState) window.playerState.volume = vol;
   const slider = document.getElementById('volume-slider');
-  const volumeValue = document.getElementById('volume-value');
-  const volumeIcon = document.getElementById('volume-icon');
-  
-  if (slider) {
-    slider.value = savedVolume;
-  }
-  if (volumeValue) {
-    volumeValue.textContent = savedVolume + '%';
-  }
-  if (volumeIcon) {
-    if (savedVolume === 0) {
-      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />`;
-    } else if (savedVolume < 50) {
-      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
-    } else {
-      volumeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />`;
-    }
-  }
-  
-  console.log('[Volume] Initialized UI with saved volume:', savedVolume);
+  const label = document.getElementById('volume-value');
+  if (slider) slider.value = vol;
+  if (label) label.textContent = vol + '%';
 }
-
-// Initialize volume control UI on page load
-document.addEventListener('DOMContentLoaded', initializeVolumeUI);
-
-// Also initialize on LiveView navigation
-window.addEventListener('phx:page-loading-stop', () => {
-  setTimeout(() => {
-    initializeVolumeUI();
-    startVolumeObserver();
-  }, 100);
-});
-
-// Watch for the volume slider to appear (for LiveView dynamic content)
-// Only observe the minimal scope needed, and disconnect once found
-let _volumeObserverActive = false;
-function startVolumeObserver() {
-  if (_volumeObserverActive) return;
-  _volumeObserverActive = true;
-  
-  const volumeObserver = new MutationObserver((mutations) => {
-    const slider = document.getElementById('volume-slider');
-    if (slider) {
-      const saved = localStorage.getItem('playerVolume');
-      // Only reinitialize if the slider has the wrong default value
-      if (saved && slider.value === '80' && saved !== '80') {
-        initializeVolumeUI();
-      }
-      // Stop observing once we've found and initialized the slider
-      volumeObserver.disconnect();
-      _volumeObserverActive = false;
-    }
-  });
-  
-  volumeObserver.observe(document.body, { childList: true, subtree: true });
-  
-  // Safety: disconnect after 10 seconds regardless
-  setTimeout(() => {
-    volumeObserver.disconnect();
-    _volumeObserverActive = false;
-  }, 10000);
-}
-
-// Start observing when DOM is ready
-document.addEventListener('DOMContentLoaded', startVolumeObserver);
-
-console.log("✅ Simple sync player loaded (with YouTube IFrame API)");
+document.addEventListener('DOMContentLoaded', initVolumeUI);
+window.addEventListener('phx:page-loading-stop', () => setTimeout(initVolumeUI, 100));

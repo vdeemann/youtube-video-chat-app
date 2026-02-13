@@ -1,4 +1,4 @@
-<div class="relative w-full h-screen bg-black overflow-hidden" id="room-container" phx-hook="VideoEndedPusher">
+<div class="relative w-full h-screen bg-black overflow-hidden" id="room-container" phx-hook="RoomHook">
   <!-- Media Player Container - phx-update="ignore" prevents LiveView from ever touching this -->
   <div class="absolute inset-0 w-full h-full" id="media-container" phx-update="ignore">
     <!-- Player will be injected here by JavaScript -->
@@ -702,37 +702,6 @@
                     <% end %>
                   </div>
                 </div>
-              </div>
-            </div>
-          <% end %>
-          
-          <!-- DJ Line -->
-          <%= if length(@dj_line) > 0 do %>
-            <div class="mb-4">
-              <h4 class="text-xs font-semibold text-purple-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                DJ Line
-              </h4>
-              <div class="flex flex-wrap gap-1.5">
-                <%= for {dj, index} <- Enum.with_index(@dj_line) do %>
-                  <% dj_user_id = Map.get(dj, :user_id) || Map.get(dj, "user_id") %>
-                  <% dj_username = Map.get(dj, :username) || Map.get(dj, "username") || "?" %>
-                  <% dj_color = Map.get(dj, :color) || Map.get(dj, "color") || "#888" %>
-                  <% dj_track_count = Map.get(dj, :track_count) || Map.get(dj, "track_count") || 0 %>
-                  <% is_current = dj_user_id == @current_dj %>
-                  <div class={"flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition #{if is_current, do: "bg-purple-500/30 border border-purple-400/50 text-purple-300", else: "bg-white/5 border border-white/10 text-gray-400"}"}
-                       title={"#{dj_username} • #{dj_track_count} track#{if dj_track_count != 1, do: "s"} queued"}>
-                    <%= if is_current do %>
-                      <span class="w-1.5 h-1.5 bg-purple-400 rounded-full animate-pulse"></span>
-                    <% else %>
-                      <span class="text-gray-500"><%= index + 1 %></span>
-                    <% end %>
-                    <span style={"color: #{dj_color}"}><%= dj_username %></span>
-                    <span class="text-gray-500">(<%= dj_track_count %>)</span>
-                  </div>
-                <% end %>
               </div>
             </div>
           <% end %>
