@@ -225,6 +225,17 @@ loadYouTubeAPI();
 })();
 
 // ===========================================
+// LIVE POSITION HELPER
+// ===========================================
+// Recompute the expected playback position right now, accounting for clock offset.
+function getLivePosition() {
+  const sa = window.playerState.startedAt;
+  if (!sa) return 0;
+  const offset = window._clockOffset || 0;
+  return Math.max(0, (Date.now() - sa - offset) / 1000);
+}
+
+// ===========================================
 // SYNC PLAYER — the ONE entry point
 // ===========================================
 // Called on mount and whenever the server broadcasts a state change.
@@ -257,6 +268,9 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
   // Adjust for clock difference: offset = Date.now() - serverNow
   const clockOffset = Date.now() - (serverNow || Date.now());
   const seekPosition = startedAt ? Math.max(0, (Date.now() - startedAt - clockOffset) / 1000) : 0;
+
+  // Store clockOffset so onReady/READY can recompute a fresh position
+  window._clockOffset = clockOffset;
 
   // Destroy old player
   try { window.playerState.ytPlayer?.destroy(); } catch (_) {}
@@ -341,20 +355,27 @@ function initYouTubePlayer(videoId, startSeconds) {
         window.playerState.playerReady = true;
         if (window.playerState._startMuted) {
           e.target.mute();
-          e.target.playVideo();
         } else {
           e.target.unMute();
           e.target.setVolume(window.playerState.volume);
-          e.target.playVideo();
         }
-        // Send immediate progress report so the server recalibrates started_at right away
-        setTimeout(() => {
-          try {
-            const cur = e.target.getCurrentTime();
-            const dur = e.target.getDuration();
-            if (cur > 0) pushVideoProgress(cur, dur || 0);
-          } catch (_) {}
-        }, 1000);
+        // Recompute live position at the moment the player is actually ready,
+        // since time has passed since syncPlayer computed the initial seekPosition.
+        const livePos = getLivePosition();
+        if (livePos > 1) {
+          e.target.seekTo(livePos, true);
+        }
+        e.target.playVideo();
+        // Host sends immediate progress report so the server recalibrates started_at right away
+        if (window.playerState.isHost) {
+          setTimeout(() => {
+            try {
+              const cur = e.target.getCurrentTime();
+              const dur = e.target.getDuration();
+              if (cur > 0) pushVideoProgress(cur, dur || 0);
+            } catch (_) {}
+          }, 500);
+        }
       },
       onStateChange: (e) => {
         // Track ended
@@ -399,19 +420,28 @@ function initSoundCloud(startPosition) {
     } else {
       widget.setVolume(window.playerState.volume);
     }
-    if (startPosition > 0) widget.seekTo(startPosition * 1000);
+    // Recompute live position at the moment the widget is actually ready,
+    // since time has passed since syncPlayer computed the initial startPosition.
+    const livePos = getLivePosition();
+    if (livePos > 1) {
+      widget.seekTo(livePos * 1000);
+    } else if (startPosition > 0) {
+      widget.seekTo(startPosition * 1000);
+    }
     widget.play();
-    // Send immediate progress report so the server recalibrates started_at right away
-    setTimeout(() => {
-      try {
-        widget.getPosition((pos) => {
-          const cur = pos / 1000;
-          if (cur > 0) {
-            widget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
-          }
-        });
-      } catch (_) {}
-    }, 1500);
+    // Host sends immediate progress report so the server recalibrates started_at right away
+    if (window.playerState.isHost) {
+      setTimeout(() => {
+        try {
+          widget.getPosition((pos) => {
+            const cur = pos / 1000;
+            if (cur > 0) {
+              widget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
+            }
+          });
+        } catch (_) {}
+      }, 800);
+    }
   });
 
   widget.bind(window.SC.Widget.Events.PLAY, () => {
@@ -506,7 +536,7 @@ setInterval(() => {
   if (!window.playerState.startedAt) return;
   if (window.playerState.endTriggered) return;
 
-  const expected = (Date.now() - window.playerState.startedAt) / 1000;
+  const expected = getLivePosition();
 
   // Safety: if the player never became ready but we're well past the
   // estimated duration, tell the server the track ended so the queue advances.
@@ -520,11 +550,11 @@ setInterval(() => {
 
   if (!window.playerState.playerReady) return;
 
-  // Grace period: don't drift-correct seeks for the first 5s after player creation,
+  // Grace period: don't drift-correct seeks for the first 2.5s after player creation,
   // giving the player time to load and seek to the initial position.
   // Progress reports are ALWAYS sent regardless of grace period.
   const age = Date.now() - (window.playerState._createdAt || 0);
-  const inGracePeriod = age < 5000;
+  const inGracePeriod = age < 2500;
 
   if (window.playerState.mediaType === "youtube" && window.playerState.ytPlayer) {
     try {
@@ -538,8 +568,8 @@ setInterval(() => {
       }
       // Only drift-correct after grace period
       if (!inGracePeriod && Math.abs(expected - cur) > 3) window.playerState.ytPlayer.seekTo(expected, true);
-      // Always report progress to keep the server's started_at calibrated
-      if (cur > 0) pushVideoProgress(cur, dur || 0);
+      // Host reports progress to keep the server's started_at calibrated
+      if (window.playerState.isHost && cur > 0) pushVideoProgress(cur, dur || 0);
     } catch (_) {}
   }
 
@@ -551,8 +581,8 @@ setInterval(() => {
       const cur = pos / 1000;
       // Only drift-correct after grace period
       if (!inGracePeriod && Math.abs(expected - cur) > 3) window.scWidget.seekTo(expected * 1000);
-      // Always report progress to keep the server's started_at calibrated
-      if (cur > 0) {
+      // Host reports progress to keep the server's started_at calibrated
+      if (window.playerState.isHost && cur > 0) {
         window.scWidget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
       }
     });

@@ -177,10 +177,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("video_progress", %{"current_time" => current, "duration" => duration}, socket) do
-    # Allow any connected client to report progress to keep started_at calibrated.
-    # The server uses the latest report to recalibrate, so even if multiple clients
-    # report, the result converges to the correct position.
-    if socket.assigns.current_media do
+    if socket.assigns.is_host && socket.assigns.current_media do
       RoomServer.report_progress(socket.assigns.room.id, current, duration)
     end
     {:noreply, socket}
