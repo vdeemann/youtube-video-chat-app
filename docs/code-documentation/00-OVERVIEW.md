@@ -1,225 +1,110 @@
-# YouTube Video Chat App - Complete Code Documentation
+# 00 — Architecture Overview
 
-## Table of Contents
+## What This Application Does
 
-1. [Project Overview](#project-overview)
-2. [Architecture](#architecture)
-3. [Technology Stack](#technology-stack)
-4. [Directory Structure](#directory-structure)
-5. [Core Components](#core-components)
+YouTube Video Chat App is a **real-time watch party platform** built with Elixir, Phoenix LiveView, and JavaScript. Users create rooms, share YouTube or SoundCloud URLs, and watch/listen together with synchronized playback and live chat.
 
-## Project Overview
+## Tech Stack
 
-The YouTube Video Chat App is a real-time collaborative video watching platform built with Elixir, Phoenix LiveView, and JavaScript. It allows multiple users to watch YouTube and SoundCloud content together in synchronized rooms with live chat functionality.
+| Layer | Technology | Role |
+|-------|-----------|------|
+| Language | Elixir 1.14+ | Functional, concurrent backend |
+| Framework | Phoenix 1.7 + LiveView 0.20 | Web framework with real-time UI |
+| Database | PostgreSQL | Persistent storage (rooms, users, playlists) |
+| Real-time | Phoenix PubSub + WebSockets | State broadcasting & presence |
+| Process Model | GenServer + DynamicSupervisor | Per-room stateful processes |
+| Frontend JS | YouTube iFrame API, SoundCloud Widget API | Media playback |
+| CSS | TailwindCSS | Utility-first styling |
+| Bundler | esbuild + Tailwind CLI | Asset compilation |
+| Deployment | Docker / Render.com | Containerized production |
 
-### Key Features
-
-- **Real-time Room Management**: Create and join watching rooms
-- **Multi-platform Support**: YouTube and SoundCloud integration
-- **Synchronized Playback**: Automatic video advancement and queue management
-- **Live Chat**: Real-time messaging with presence tracking
-- **Guest System**: No authentication required - instant anonymous access
-- **Queue System**: Add videos to a playlist for continuous playback
-- **Host Controls**: Room creators can manage playback and queue
-
-## Architecture
-
-The application follows a distributed, event-driven architecture:
+## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Client Layer                          │
-│  (Phoenix LiveView + JavaScript Hooks + Media Players)       │
-└────────────────┬────────────────────────────────────────────┘
-                 │
-                 ↓ WebSocket (Phoenix Channels)
-┌─────────────────────────────────────────────────────────────┐
-│                   Phoenix LiveView Layer                     │
-│              (RoomLive.Show - State Management)              │
-└────────────────┬────────────────────────────────────────────┘
-                 │
-                 ↓ PubSub Messages
-┌─────────────────────────────────────────────────────────────┐
-│                   Business Logic Layer                       │
-│              (RoomServer GenServer - Room State)             │
-└────────────────┬────────────────────────────────────────────┘
-                 │
-                 ↓ Database Operations
-┌─────────────────────────────────────────────────────────────┐
-│                      Data Layer                              │
-│                (PostgreSQL via Ecto)                         │
-└─────────────────────────────────────────────────────────────┘
+Browser (Client)
+  LiveView DOM  ◄─ JS Hooks (app.js) ── YouTube/SC iFrames
+       │ WebSocket        │ pushEvent / handleEvent
+       ▼                  ▼
+Phoenix Server
+  Endpoint (Cowboy HTTP) → Router → LiveViews
+  RoomLive (LiveView) ◄─ PubSub (broadcast) ◄─ Presence
+       │ call/cast         ▲ broadcast
+       ▼                   │
+  RoomServer (GenServer) — one per active room
+  - current_track, queue[], started_at, auto-advance timer
+       │
+  DynamicSupervisor │ Registry │ Repo (Ecto/Postgres)
 ```
 
-### Event Flow Example: Adding a Video
+## Core Execution Flows
 
-```
-User enters URL
-    ↓
-LiveView handles "add_video" event
-    ↓
-Parses URL (YouTube/SoundCloud)
-    ↓
-Calls RoomServer.add_to_queue/3
-    ↓
-RoomServer updates state
-    ↓
-Broadcasts {:queue_updated, queue} via PubSub
-    ↓
-All connected LiveView clients receive update
-    ↓
-UI updates for all viewers
-```
+### Flow 1: User Creates a Room
+1. User visits `/rooms` → `RoomLive.Index.mount/3` loads public rooms
+2. User clicks "Create Room" → `handle_event("create_room")` validates auth
+3. `Rooms.create_room_for_user/2` checks the 1-room-per-user limit, inserts into DB
+4. User is `push_navigate`'d to `/room/:slug`
 
-## Technology Stack
+### Flow 2: User Joins a Room
+1. Browser navigates to `/room/:slug` → `RoomLive.Show.mount/3`
+2. Room is fetched from DB; a `RoomServer` GenServer is started if needed
+3. Phoenix Presence tracks the user in topic `"room:<id>"`
+4. The LiveView subscribes to PubSub topic `"room:<id>"`
+5. Current playback state is fetched from `RoomServer.get_state/1`
+6. A `sync_player` event is pushed to the JS hook with `{media, started_at, server_now, is_host}`
 
-### Backend
-- **Elixir 1.14+**: Functional programming language
-- **Phoenix 1.7.11**: Web framework
-- **Phoenix LiveView 0.20.2**: Real-time server-rendered UI
-- **Ecto 3.11**: Database wrapper and query generator
-- **PostgreSQL**: Relational database
-- **Phoenix PubSub**: Distributed messaging
+### Flow 3: Adding a Track to the Queue
+1. User pastes a URL → `handle_event("add_video")` parses it (YouTube or SoundCloud)
+2. `RoomServer.add_to_queue/3` is called — a `GenServer.call`
+3. RoomServer builds a media map, appends to queue, calls `maybe_start_playing/1`
+4. `broadcast/1` sends `{:room_state_changed, state}` to all subscribers
+5. Every LiveView's `handle_info({:room_state_changed, ...})` updates assigns and pushes `sync_player` to JS
 
-### Frontend
-- **JavaScript ES6+**: Client-side logic
-- **TailwindCSS**: Utility-first CSS framework
-- **Alpine.js** (embedded in LiveView): Reactive attributes
-- **YouTube IFrame API**: YouTube video control
-- **SoundCloud Widget API**: SoundCloud audio control
+### Flow 4: Track Ends → Auto-Advance
+1. YouTube `onStateChange(0)` or SoundCloud `FINISH` fires in the browser
+2. JS calls `pushVideoEnded()` → LiveView `handle_event("video_ended")`
+3. LiveView calls `RoomServer.track_ended/1`
+4. RoomServer cancels any existing timer, pops the next track off the queue, sets `started_at = now`, schedules a new timer, and broadcasts
+5. If no timer-based advancement has happened, a server-side `Process.send_after(:auto_advance)` also fires as a safety net
 
-### DevOps
-- **Docker**: Containerization
-- **Docker Compose**: Multi-container orchestration
-- **esbuild**: JavaScript bundling
-- **Mix**: Elixir build tool
+### Flow 5: Synchronized Playback
+1. Server stores `started_at` — the ms-epoch when position 0 of the current track began
+2. Every client computes: `seek_position = (Date.now() - started_at - clockOffset) / 1000`
+3. A 1.5s interval drift-corrects if actual position diverges > 3s from expected
+4. The host client reports progress back to the server every 1.5s, recalibrating `started_at`
 
 ## Directory Structure
 
 ```
 youtube-video-chat-app/
-├── assets/                      # Frontend assets
-│   ├── css/                     # Stylesheets
-│   │   └── app.css             # Main CSS with Tailwind
-│   └── js/                      # JavaScript
-│       ├── app.js              # Main JS entry point
-│       └── hooks/              # Phoenix LiveView hooks
-│           ├── media_player_ultimate.js  # Primary media player
-│           ├── youtube_player.js         # YouTube-specific
-│           └── media_player_simplified.js # Fallback version
-│
-├── config/                      # Application configuration
-│   ├── config.exs              # Base configuration
-│   ├── dev.exs                 # Development settings
-│   ├── prod.exs                # Production settings (if exists)
-│   ├── runtime.exs             # Runtime configuration
-│   └── test.exs                # Test environment settings
-│
+├── assets/js/app.js              # Client-side player logic, hooks, sync
+├── config/                       # Compile-time & runtime configuration
 ├── lib/
-│   ├── youtube_video_chat_app/           # Core business logic
-│   │   ├── accounts.ex                   # User/guest management
-│   │   ├── application.ex                # OTP application
-│   │   ├── mailer.ex                     # Email functionality
-│   │   ├── repo.ex                       # Database repository
-│   │   └── rooms/                        # Room management
-│   │       ├── room.ex                   # Room schema/model
-│   │       └── room_server.ex            # Room state GenServer
-│   │   └── rooms.ex                      # Room context/API
-│   │
-│   └── youtube_video_chat_app_web/      # Web interface
-│       ├── components/                   # Reusable UI components
-│       │   ├── core_components.ex        # Core UI elements
-│       │   ├── layouts.ex                # Layout components
-│       │   └── layouts/                  # Layout templates
-│       │       ├── app.html.heex         # Main app layout
-│       │       └── root.html.heex        # Root HTML structure
-│       ├── controllers/                  # HTTP controllers
-│       │   ├── page_controller.ex        # Home page
-│       │   └── test_controller.ex        # Test routes
-│       ├── live/                         # LiveView modules
-│       │   └── room_live/
-│       │       ├── index.ex              # Room list page
-│       │       ├── show.ex               # Room view/logic
-│       │       └── show.html.heex        # Room template
-│       ├── endpoint.ex                   # HTTP endpoint config
-│       ├── gettext.ex                    # Internationalization
-│       ├── presence.ex                   # User presence tracking
-│       ├── router.ex                     # URL routing
-│       └── telemetry.ex                  # Metrics/monitoring
-│   └── youtube_video_chat_app_web.ex     # Web module definitions
-│
-├── priv/                        # Private application files
-│   ├── gettext/                # Translation files
-│   ├── repo/                   # Database files
-│   │   ├── migrations/         # Schema migrations
-│   │   └── seeds.exs          # Seed data
-│   └── static/                 # Static assets (compiled)
-│
-├── test/                        # Test files
-│   └── test_helper.exs         # Test configuration
-│
-├── docs/                        # Documentation
-│   ├── features/               # Feature documentation
-│   ├── setup/                  # Setup guides
-│   └── development/            # Development notes
-│
-├── scripts/                     # Utility scripts
-│   ├── docker/                 # Docker-related scripts
-│   ├── development/            # Dev helper scripts
-│   └── maintenance/            # Maintenance scripts
-│
-├── mix.exs                      # Project definition
-├── mix.lock                    # Dependency lock file
-├── Dockerfile                  # Production Docker image
-├── docker-compose.yml          # Docker services definition
-└── README.md                   # Project readme
+│   ├── youtube_video_chat_app/   # Business logic (contexts, schemas, GenServers)
+│   │   ├── application.ex        # OTP supervision tree
+│   │   ├── repo.ex               # Ecto repository
+│   │   ├── accounts.ex           # User context
+│   │   ├── rooms.ex              # Room context
+│   │   ├── rooms/room_server.ex  # GenServer: queue, playback, timers
+│   │   ├── playlists.ex          # Playlist context
+│   │   └── playlists/            # Playlist & PlaylistItem schemas
+│   └── youtube_video_chat_app_web/
+│       ├── endpoint.ex           # HTTP entry point, plug pipeline
+│       ├── router.ex             # URL → controller/LiveView mapping
+│       ├── user_auth.ex          # Auth plugs and LiveView on_mount hooks
+│       ├── presence.ex           # Phoenix Presence for online tracking
+│       └── live/                 # LiveView modules
+├── priv/                         # Migrations, static assets
+└── test/                         # ExUnit tests
 ```
 
-## Core Components
+## Key Design Decisions
 
-### 1. Application Supervision Tree
+1. **GenServer per room** — All playback state lives in memory in a `RoomServer` process, not the database. This provides sub-millisecond reads and atomic state transitions without DB contention.
 
-```
-YoutubeVideoChatApp.Application (Supervisor)
-├── YoutubeVideoChatAppWeb.Telemetry
-├── YoutubeVideoChatApp.Repo (Database)
-├── DNSCluster
-├── Phoenix.PubSub (Message broker)
-├── YoutubeVideoChatAppWeb.Presence (Presence tracking)
-├── DynamicSupervisor (RoomSupervisor - manages RoomServers)
-└── YoutubeVideoChatAppWeb.Endpoint (HTTP server)
-```
+2. **Server-authoritative time** — The server records *when* a track started (`started_at` as ms epoch). Clients compute their own seek position. This avoids needing to synchronize a "current position" which would drift.
 
-### 2. Key Processes
+3. **Single broadcast event** — Every state mutation emits one PubSub message (`{:room_state_changed, map}`). The LiveView has a single handler, preventing race conditions from multiple event types.
 
-- **RoomServer (GenServer)**: One per room, manages room state, queue, and playback
-- **LiveView Processes**: One per connected client, handles UI state
-- **Presence Process**: Tracks which users are in which rooms
-- **PubSub**: Broadcasts events between processes
+4. **Guest + registered user model** — Guests can watch and listen; registered users can create rooms, add tracks, and chat. This lowers the barrier to entry while incentivizing registration.
 
-### 3. Data Flow
-
-**State Management:**
-- Room persistent data: PostgreSQL (via Ecto)
-- Room runtime state: RoomServer GenServer (in-memory)
-- User session state: LiveView assigns (in-memory)
-- Presence data: Phoenix.Presence (distributed, in-memory)
-
-**Communication:**
-- Client ↔ Server: WebSocket (Phoenix Channels)
-- Server ↔ Server: PubSub (for multi-node support)
-- LiveView ↔ RoomServer: GenServer calls/casts
-- Broadcast to all: PubSub.broadcast
-
-### 4. Security Model
-
-- Guest-based system (no authentication)
-- Room access controlled by URL slugs
-- Host privileges determined by `host_id`
-- Input validation on all user inputs
-- CSRF protection enabled
-- XSS protection via Phoenix HTML escaping
-
----
-
-**Next:** Continue to specific file documentation for detailed line-by-line explanations.
+5. **30-minute idle timeout** — RoomServer processes terminate after 30 minutes of no activity, freeing memory. They restart on demand when a user rejoins.

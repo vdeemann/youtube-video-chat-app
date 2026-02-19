@@ -1,180 +1,126 @@
 # YouTube Video Chat App
 
-A real-time video chat application supporting YouTube videos and SoundCloud tracks with queue management.
+A real-time watch party platform built with Elixir, Phoenix LiveView, and JavaScript. Users create rooms, share YouTube or SoundCloud URLs, and watch/listen together with synchronized playback, live chat, and personal playlists.
 
-## 📚 Documentation
+## Documentation
 
-**NEW!** Complete line-by-line code documentation is now available:
-- **[Code Documentation](./docs/code-documentation/README.md)** - Comprehensive guides for every file
-- **[Getting Started](./docs/code-documentation/INDEX.md)** - Navigation and learning paths
-- **[Architecture Overview](./docs/code-documentation/00-OVERVIEW.md)** - System design and tech stack
+Complete line-by-line code documentation is available in `docs/code-documentation/`:
 
-Perfect for:
-- 🎓 Learning Elixir, Phoenix, and LiveView
-- 👨‍💻 Onboarding new developers
-- 🔍 Understanding the codebase in depth
+- **[Code Documentation](./docs/code-documentation/README.md)** — Comprehensive guides for every source file
+- **[Navigation Index](./docs/code-documentation/INDEX.md)** — Find exactly what you need
+- **[Architecture Overview](./docs/code-documentation/00-OVERVIEW.md)** — System design, execution flows, and tech stack
 
 ## Features
 
-- 🎥 YouTube video playback
-- 🎵 SoundCloud track playback
-- 📋 Queue system with auto-advancement
-- 💬 Real-time chat
-- 👥 Multi-user rooms
-- 🎭 Live presence tracking
+- **YouTube & SoundCloud** — Paste any YouTube or SoundCloud URL to queue media
+- **Synchronized playback** — Server-authoritative timing keeps all clients in sync
+- **Auto-advancing queue** — Tracks advance automatically when one finishes
+- **Real-time chat** — Instagram Live-style floating messages over the video
+- **Emoji reactions** — Send floating emoji reactions
+- **Presence tracking** — See who is watching in real time
+- **Personal playlists** — Save and load playlists, grab currently-playing tracks
+- **Guest access** — Anyone can watch; registered users can add media and chat
+- **Host controls** — Room hosts can skip tracks and remove queue items
 
 ## Quick Start
 
-### Using Docker (Recommended)
+### Docker (recommended)
 
 ```bash
 docker-compose up
 ```
 
-Then open: http://localhost:4000
+Open http://localhost:4000.
 
 ### Local Development
 
-**Requirements:**
-- Elixir 1.14+
-- PostgreSQL
-- Node.js & npm
+Requirements: Elixir 1.14+, PostgreSQL, Node.js.
 
-**Setup:**
 ```bash
-# Install dependencies
 mix deps.get
 cd assets && npm install && cd ..
-
-# Setup database
-mix ecto.create
-mix ecto.migrate
-
-# Start server
+mix ecto.create && mix ecto.migrate
 mix phx.server
 ```
 
-Open: http://localhost:4000
+Open http://localhost:4000.
 
 ## How It Works
 
-### Queue System
+1. A user creates a room. A `RoomServer` GenServer process is started to hold all playback state in memory.
+2. Users join the room via WebSocket (Phoenix LiveView). Each user subscribes to the PubSub topic `"room:<id>"` and is tracked via Phoenix Presence.
+3. When a URL is added, the server parses it, builds a media map, appends it to the in-memory queue, and broadcasts the updated state to all subscribers.
+4. The server records `started_at` (the millisecond epoch when position 0 of the current track began). Clients compute their seek position as `(Date.now() - started_at - clockOffset) / 1000`.
+5. When a track ends, the client notifies the server, which pops the next track off the queue, sets a new `started_at`, and broadcasts.
+6. A server-side `Process.send_after` timer also fires as a safety net for auto-advancement.
 
-1. **Add media** - Paste a YouTube or SoundCloud URL
-2. **Auto-play** - First item starts playing immediately
-3. **Auto-advance** - When media ends, automatically plays next item
-4. **Host control** - Only the room host triggers advancement
+## Supported URLs
 
-### Supported URLs
-
-**YouTube:**
-- `https://youtube.com/watch?v=...`
-- `https://youtu.be/...`
-
-**SoundCloud:**
-- `https://soundcloud.com/artist/track`
+| Platform | Formats |
+|----------|---------|
+| YouTube | `youtube.com/watch?v=...`, `youtu.be/...`, `youtube.com/embed/...`, bare 11-char IDs |
+| SoundCloud | `soundcloud.com/artist/track` |
 
 ## Project Structure
 
 ```
-├── assets/              # Frontend assets
-│   ├── js/
-│   │   └── hooks/       # LiveView hooks
-│   │       └── media_player.js  # Queue & playback logic
-│   └── css/
+├── assets/js/app.js                  # Client-side player, hooks, sync loop
+├── config/                           # Compile-time and runtime configuration
 ├── lib/
-│   ├── youtube_video_chat_app/
-│   │   └── rooms/
-│   │       └── room_server.ex   # Queue management
-│   └── youtube_video_chat_app_web/
+│   ├── youtube_video_chat_app/       # Business logic layer
+│   │   ├── application.ex            # OTP supervision tree
+│   │   ├── repo.ex                   # Ecto repository
+│   │   ├── accounts.ex               # User context (registration, auth, guests)
+│   │   ├── accounts/                 # User and UserToken schemas
+│   │   ├── rooms.ex                  # Room context (CRUD, slug generation)
+│   │   ├── rooms/room.ex             # Room schema
+│   │   ├── rooms/room_server.ex      # GenServer: queue, playback, timers
+│   │   ├── playlists.ex              # Playlist context
+│   │   └── playlists/                # Playlist and PlaylistItem schemas
+│   └── youtube_video_chat_app_web/   # Web interface layer
+│       ├── endpoint.ex               # HTTP/WebSocket entry point
+│       ├── router.ex                 # URL routing and pipelines
+│       ├── user_auth.ex              # Authentication plugs and LiveView hooks
+│       ├── presence.ex               # Phoenix Presence
 │       └── live/
-│           └── room_live/       # LiveView UI
-├── config/              # Configuration
-├── priv/               # Static files & migrations
-├── docs/
-│   └── code-documentation/  # 📚 Line-by-line code explanations
-└── test/               # Tests
+│           ├── room_live/show.ex     # Main room LiveView
+│           ├── room_live/show.html.heex  # Room template
+│           └── room_live/index.ex    # Room listing / lobby
+├── priv/                             # Migrations and static assets
+├── docs/                             # All project documentation
+│   └── code-documentation/           # Line-by-line code explanations
+└── test/                             # ExUnit tests
 ```
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language | Elixir 1.14+ |
+| Framework | Phoenix 1.7, LiveView 0.20 |
+| Database | PostgreSQL via Ecto |
+| Real-time | Phoenix PubSub, Presence, WebSockets |
+| Process model | GenServer + DynamicSupervisor + Registry |
+| Frontend | YouTube iFrame API, SoundCloud Widget API, TailwindCSS |
+| Bundler | esbuild + Tailwind CLI |
+| Deployment | Docker, Render.com |
 
 ## Development
 
-### Run Tests
 ```bash
-mix test
-```
-
-### Rebuild Assets
-```bash
-# In Docker
-docker-compose exec web mix assets.build
-
-# Locally
-mix assets.build
-```
-
-### Access Database
-```bash
-# In Docker
-docker-compose exec db psql -U postgres -d youtube_video_chat_app_dev
-
-# Locally
-psql youtube_video_chat_app_dev
+mix test                                    # Run tests
+mix assets.build                            # Rebuild CSS/JS
+docker-compose exec web mix assets.build    # Rebuild in Docker
 ```
 
 ## Troubleshooting
 
-### Queue not advancing?
+**Queue not advancing?** Hard-refresh (`Ctrl+Shift+R`), make sure you are the host, and check the browser console (F12) for errors.
 
-1. **Hard refresh browser** - Press `Ctrl+Shift+R`
-2. **Check you're the host** - Create your own room
-3. **Open console** - Press F12 and look for "VIDEO ENDED"
-4. **Rebuild assets** - Run `docker-compose exec web mix assets.build`
+**bcrypt error on Windows?** Use Docker, which handles native compilation automatically. The app falls back to `pbkdf2_elixir` on Windows.
 
-### bcrypt_elixir error?
-
-Use Docker - it handles all compilation automatically:
-```bash
-docker-compose up
-```
-
-### Port already in use?
-
-```bash
-# Stop containers
-docker-compose down
-
-# Or kill local processes
-mix phx.server  # then Ctrl+C
-```
-
-## Documentation
-
-Full documentation is in the `docs/` directory:
-- **`docs/code-documentation/`** - 📚 **NEW!** Complete line-by-line code explanations
-- `docs/features/` - Feature documentation
-- `docs/setup/` - Setup guides
-- `docs/development/` - Development notes
-
-## Tech Stack
-
-- **Backend:** Elixir + Phoenix + LiveView
-- **Frontend:** JavaScript (ES6) + TailwindCSS
-- **Database:** PostgreSQL
-- **Real-time:** Phoenix PubSub + WebSockets
-- **Media:** YouTube iframe API + SoundCloud Widget API
+**Port 4000 in use?** Run `docker-compose down` or kill the local process.
 
 ## License
 
 MIT
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
----
-
-**Built with ❤️ using Phoenix LiveView**
