@@ -12,8 +12,8 @@ defmodule YoutubeVideoChatApp.Application do
       YoutubeVideoChatApp.Repo,
       {DNSCluster, query: Application.get_env(:youtube_video_chat_app, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: YoutubeVideoChatApp.PubSub},
-      # Start the Finch HTTP client for sending emails
-      # {Finch, name: YoutubeVideoChatApp.Finch},
+      # Start the Finch HTTP client for API requests
+      {Finch, name: YoutubeVideoChatApp.Finch},
       # Start the Presence module
       YoutubeVideoChatAppWeb.Presence,
       # Start the Registry for room servers (faster than :global)

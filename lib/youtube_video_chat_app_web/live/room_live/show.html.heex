@@ -16,7 +16,7 @@
   
   <!-- Playlist Modal -->
   <%= if @show_playlist_modal do %>
-    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/80">
       <div class="bg-gray-900 border border-purple-500/30 rounded-2xl w-full max-w-lg mx-4 shadow-2xl flex flex-col" style="max-height: calc(100vh - 100px);">
         <!-- Modal Header -->
         <div class="p-4 border-b border-gray-700 flex items-center justify-between">
@@ -30,7 +30,11 @@
                 </svg>
               </button>
               <h2 class="text-xl font-bold text-white">
-                <%= if @playlist_modal_view == :new, do: "New Playlist", else: @selected_playlist && @selected_playlist.name %>
+                <%= case @playlist_modal_view do %>
+                  <% :new -> %>New Playlist
+                  <% :import -> %>Import Playlist
+                  <% _ -> %><%= @selected_playlist && @selected_playlist.name %>
+                <% end %>
               </h2>
             </div>
           <% end %>
@@ -80,15 +84,26 @@
                     </div>
                   <% end %>
                 </div>
-                <button
-                  phx-click="playlist_show_new_form"
-                  class="w-full px-4 py-3 border-2 border-dashed border-gray-600 hover:border-purple-500 text-gray-400 hover:text-purple-400 rounded-lg transition flex items-center justify-center gap-2"
-                >
-                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                  </svg>
-                  Create New Playlist
-                </button>
+                <div class="flex gap-2">
+                  <button
+                    phx-click="playlist_show_new_form"
+                    class="flex-1 px-4 py-3 border-2 border-dashed border-gray-600 hover:border-purple-500 text-gray-400 hover:text-purple-400 rounded-lg transition flex items-center justify-center gap-2"
+                  >
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                    Create New
+                  </button>
+                  <button
+                    phx-click="playlist_show_import"
+                    class="flex-1 px-4 py-3 border-2 border-dashed border-gray-600 hover:border-blue-500 text-gray-400 hover:text-blue-400 rounded-lg transition flex items-center justify-center gap-2"
+                  >
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Import Playlist
+                  </button>
+                </div>
               <% end %>
             
             <% :new -> %>
@@ -113,6 +128,70 @@
                 </button>
               </form>
             
+            <% :import -> %>
+              <!-- Import Playlist Form -->
+              <div class="space-y-5">
+                <div class="text-center">
+                  <div class="w-16 h-16 mx-auto mb-3 rounded-full bg-blue-500/20 flex items-center justify-center">
+                    <svg class="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                  </div>
+                  <p class="text-gray-400 text-sm">
+                    Paste a YouTube or SoundCloud playlist URL to import all its tracks as a new playlist.
+                  </p>
+                </div>
+
+                <form phx-submit="import_playlist" class="space-y-4">
+                  <div>
+                    <label class="block text-gray-300 text-sm mb-2">Playlist URL</label>
+                    <input
+                      type="text"
+                      name="url"
+                      value={@import_url}
+                      placeholder="https://youtube.com/playlist?list=... or https://soundcloud.com/.../sets/..."
+                      class="w-full px-4 py-3 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                      required
+                      autofocus
+                      disabled={@importing}
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={@importing}
+                    class={"w-full px-4 py-3 text-white font-semibold rounded-lg transition flex items-center justify-center gap-2 #{if @importing, do: "bg-gray-600 cursor-not-allowed", else: "bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600"}"}
+                  >
+                    <%= if @importing do %>
+                      <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Importing...
+                    <% else %>
+                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Import Playlist
+                    <% end %>
+                  </button>
+                </form>
+
+                <div class="bg-gray-800/50 rounded-lg p-3">
+                  <h4 class="text-gray-300 text-xs font-semibold mb-2">Supported URLs</h4>
+                  <div class="space-y-1.5 text-xs text-gray-500">
+                    <div class="flex items-center gap-2">
+                      <span class="text-red-400">▶</span>
+                      <span>youtube.com/playlist?list=PLxxxxxxxxx</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-orange-400">☁</span>
+                      <span>soundcloud.com/artist/sets/playlist-name</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
             <% :show -> %>
               <!-- Playlist Detail View -->
               <%= if @selected_playlist do %>
@@ -197,6 +276,8 @@
                 else
                   @selected_playlist.items
                 end %>
+                <% total_filtered = length(filtered_items) %>
+                <% visible_items = Enum.take(filtered_items, @playlist_visible_count) %>
                 
                 <%= if Enum.empty?(@selected_playlist.items) do %>
                   <div class="text-center py-8">
@@ -212,12 +293,12 @@
                     </div>
                   <% else %>
                   <div class="space-y-2">
-                    <%= for {item, index} <- Enum.with_index(filtered_items) do %>
+                    <%= for {item, index} <- Enum.with_index(visible_items) do %>
                       <div class="flex items-center gap-2 p-2 bg-gray-800/50 rounded-lg group">
                         <span class="text-gray-500 text-xs w-5 text-center"><%= index + 1 %></span>
                         <div class="w-10 h-8 rounded overflow-hidden bg-gray-700 shrink-0">
                           <%= if item.thumbnail do %>
-                            <img src={item.thumbnail} alt="" class="w-full h-full object-cover" />
+                            <img src={item.thumbnail} alt="" class="w-full h-full object-cover" loading="lazy" />
                           <% else %>
                             <div class={"w-full h-full flex items-center justify-center text-sm #{if item.media_type == "soundcloud", do: "bg-orange-900", else: "bg-red-900"}"}>
                               <%= if item.media_type == "youtube", do: "▶️", else: "🎵" %>
@@ -259,6 +340,20 @@
                           </button>
                         </div>
                       </div>
+                    <% end %>
+                  </div>
+                  <!-- Load more + count -->
+                  <div class="mt-3 text-center space-y-2">
+                    <p class="text-gray-500 text-xs">
+                      Showing <%= length(visible_items) %> of <%= total_filtered %> tracks
+                    </p>
+                    <%= if length(visible_items) < total_filtered do %>
+                      <button
+                        phx-click="load_more_tracks"
+                        class="px-4 py-2 bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 text-sm rounded-lg transition"
+                      >
+                        Load more tracks
+                      </button>
                     <% end %>
                   </div>
                   <% end %>
@@ -709,9 +804,21 @@
           <!-- Up Next Section -->
           <%= if length(@queue) > 0 do %>
             <div>
-              <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                Up Next • <%= length(@queue) %> track<%= if length(@queue) != 1, do: "s" %>
-              </h4>
+              <div class="flex items-center justify-between mb-2">
+                <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Up Next • <%= length(@queue) %> track<%= if length(@queue) != 1, do: "s" %>
+                </h4>
+                <%= if !@is_guest do %>
+                  <button
+                    phx-click="clear_queue"
+                    data-confirm="Clear all tracks from the queue?"
+                    class="text-xs px-2 py-0.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition"
+                    title="Clear entire queue"
+                  >
+                    Clear all
+                  </button>
+                <% end %>
+              </div>
               <div class="space-y-2">
                 <%= for {media, index} <- Enum.with_index(@queue) do %>
                   <% media_type = Map.get(media, :type) || Map.get(media, "type") %>

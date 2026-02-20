@@ -48,12 +48,13 @@ defmodule YoutubeVideoChatApp.MixProject do
       {:comeonin, "~> 5.5"},
       {:pbkdf2_elixir, "~> 2.0"},
       {:dns_cluster, "~> 0.1.1"},
-      {:swoosh, "~> 1.5"}
+      {:swoosh, "~> 1.5"},
+      {:finch, "~> 0.13"}
     ]
 
     # Only include bcrypt on non-Windows systems (Linux, macOS)
     # Windows requires Visual Studio build tools which are often not available
-    bcrypt_deps = 
+    bcrypt_deps =
       case :os.type() do
         {:win32, _} -> []
         _ -> [{:bcrypt_elixir, "~> 3.0"}]

@@ -49,6 +49,8 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     do: cast(room_id, {:remove_from_queue, id})
   def remove_from_queue_by_user(room_id, id, uid),
     do: cast(room_id, {:remove_from_queue_by_user, id, uid})
+  def clear_queue(room_id),
+    do: cast(room_id, :clear_queue)
   def report_progress(room_id, current_s, duration_s),
     do: cast(room_id, {:report_progress, current_s, duration_s})
   def add_message(room_id, msg),
@@ -149,6 +151,15 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     {:noreply, st, @idle_timeout}
   end
 
+  # --- clear queue --------------------------------------------------------------
+
+  @impl true
+  def handle_cast(:clear_queue, st) do
+    st = %{st | queue: []}
+    broadcast(st)
+    {:noreply, st, @idle_timeout}
+  end
+
   # --- host progress reports (recalibrate started_at) -------------------------
 
   @impl true
@@ -156,6 +167,12 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     now = now_ms()
     # Recalibrate: started_at = now - (current_s * 1000)
     st = %{st | started_at: round(now - current_s * 1000)}
+    # Update current_track duration with the real value from the player
+    st = if duration_s > 0 && st.current_track do
+      %{st | current_track: Map.put(st.current_track, :duration, duration_s)}
+    else
+      st
+    end
     # Reschedule timer with real duration
     st = if duration_s > 0 do
       remaining = max(0, duration_s - current_s) + @auto_advance_buffer_s
@@ -234,7 +251,12 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   defp schedule_timer_for_track(st, track) do
     duration = (track[:duration] || track.duration || 300)
-    schedule_timer(st, duration + @auto_advance_buffer_s)
+    # Use a generous initial timer since the default duration (180s) from URL
+    # parsing is often wrong.  The host's progress reports will reschedule
+    # the timer with the real duration, so this just needs to be long enough
+    # to avoid premature auto-advance on longer tracks.
+    safe_duration = max(duration, 600)
+    schedule_timer(st, safe_duration + @auto_advance_buffer_s)
   end
 
   defp schedule_timer(st, seconds) do
@@ -272,27 +294,24 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   # -- Public state snapshot ---------------------------------------------------
 
   defp public_state(st) do
-    # If started_at implies we're past the track duration, cap it so clients
-    # don't seek past the end on rejoin. This handles the case where everyone
-    # left and came back — started_at would be stale from the original play time.
-    now = now_ms()
-    started_at = if st.current_track && st.started_at do
-      duration_ms = ((st.current_track[:duration] || st.current_track.duration || 300) * 1000)
-      elapsed = now - st.started_at
-      if elapsed > duration_ms do
-        # Cap: pretend we're near the end but not past it
-        round(now - duration_ms + 5000)
-      else
-        st.started_at
-      end
-    else
-      st.started_at
-    end
-
+    # Return the raw started_at without capping.
+    #
+    # Previously this function tried to cap elapsed time to the track's
+    # duration to prevent seeking past the end on rejoin.  However, the
+    # initial duration stored on the track is a hardcoded guess (180s)
+    # from URL parsing.  If the real track is longer than 180s and the
+    # host hasn't reported progress yet (or everyone left and rejoined),
+    # the cap would force all clients to seek back to ~175s (2:55).
+    #
+    # The client-side sync loop already handles drift correction and
+    # end-of-track detection, so this server-side cap is unnecessary
+    # and actively harmful.  The host's progress reports update both
+    # started_at and the track's real duration, keeping everything
+    # calibrated without needing an artificial cap here.
     %{
       current_track: st.current_track,
-      started_at: started_at,
-      server_now: now,
+      started_at: st.started_at,
+      server_now: now_ms(),
       queue: st.queue
     }
   end

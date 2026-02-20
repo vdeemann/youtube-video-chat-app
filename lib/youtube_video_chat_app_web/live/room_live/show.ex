@@ -71,7 +71,10 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:new_playlist_name, "")
     |> assign(:playlist_add_url, "")
     |> assign(:playlist_search_query, "")
+    |> assign(:playlist_visible_count, 50)
     |> assign(:show_grab_modal, false)
+    |> assign(:import_url, "")
+    |> assign(:importing, false)
 
     # Push player state to JS on connected mount
     socket = if connected?(socket) do
@@ -191,6 +194,14 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("clear_queue", _params, socket) do
+    if not socket.assigns.is_guest do
+      RoomServer.clear_queue(socket.assigns.room.id)
+    end
+    {:noreply, socket}
   end
 
   @impl true
@@ -337,12 +348,76 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("playlist_search", %{"value" => query}, socket) do
-    {:noreply, assign(socket, :playlist_search_query, query)}
+    {:noreply, assign(socket, playlist_search_query: query, playlist_visible_count: 50)}
+  end
+
+  @impl true
+  def handle_event("load_more_tracks", _params, socket) do
+    {:noreply, assign(socket, :playlist_visible_count, socket.assigns.playlist_visible_count + 50)}
   end
 
   @impl true
   def handle_event("playlist_show_new_form", _params, socket) do
     {:noreply, assign(socket, playlist_modal_view: :new, new_playlist_name: "")}
+  end
+
+  @impl true
+  def handle_event("playlist_show_import", _params, socket) do
+    {:noreply, assign(socket, playlist_modal_view: :import, import_url: "", importing: false)}
+  end
+
+  @impl true
+  def handle_event("import_playlist", %{"url" => url}, socket) do
+    user = socket.assigns.current_user
+    url = String.trim(url)
+
+    if url == "" do
+      {:noreply, put_flash(socket, :error, "Please enter a URL")}
+    else
+      # Set importing state, then do the work asynchronously
+      socket = assign(socket, importing: true)
+      send(self(), {:do_import, url, user.id})
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:do_import, url, user_id}, socket) do
+    alias YoutubeVideoChatApp.PlaylistImporter
+
+    case PlaylistImporter.import_playlist(url) do
+      {:ok, %{name: name, tracks: tracks}} when tracks != [] ->
+        case Playlists.create_playlist(%{name: name, user_id: user_id}) do
+          {:ok, playlist} ->
+            Enum.each(tracks, fn track ->
+              Playlists.add_item_to_playlist(playlist.id, track)
+            end)
+
+            playlists = Playlists.list_user_playlists_with_counts(user_id)
+            playlist_with_items = Playlists.get_playlist_with_items!(playlist.id)
+
+            {:noreply,
+              socket
+              |> assign(
+                importing: false,
+                import_url: "",
+                user_playlists: playlists,
+                playlist_modal_view: :show,
+                selected_playlist: playlist_with_items,
+                playlist_visible_count: 50
+              )
+              |> put_flash(:info, "Imported '#{name}' with #{length(tracks)} tracks!")}
+
+          {:error, _} ->
+            {:noreply, assign(socket, importing: false) |> put_flash(:error, "Failed to create playlist")}
+        end
+
+      {:ok, %{tracks: []}} ->
+        {:noreply, assign(socket, importing: false) |> put_flash(:error, "No tracks found in the playlist")}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, importing: false) |> put_flash(:error, reason)}
+    end
   end
 
   @impl true
@@ -370,7 +445,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     case Playlists.get_user_playlist(user.id, playlist_id) do
       nil -> {:noreply, put_flash(socket, :error, "Playlist not found")}
       playlist ->
-        {:noreply, assign(socket, playlist_modal_view: :show, selected_playlist: Playlists.get_playlist_with_items!(playlist.id))}
+        {:noreply, assign(socket, playlist_modal_view: :show, selected_playlist: Playlists.get_playlist_with_items!(playlist.id), playlist_visible_count: 50)}
     end
   end
 
