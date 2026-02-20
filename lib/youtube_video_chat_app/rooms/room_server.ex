@@ -16,6 +16,9 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   ## Performance
   - Queue uses Erlang `:queue` for O(1) append and O(1) pop.
+  - Broadcasts send only a limited preview of the queue (first 50 items)
+    plus total count, to avoid serializing large queues over WebSocket.
+  - Queue length is cached and maintained via arithmetic (never recomputed).
 
   Terminates after 30 min of inactivity.
   """
@@ -25,6 +28,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @idle_timeout :timer.minutes(30)
   @auto_advance_buffer_s 5
+  @queue_broadcast_limit 50
 
   defstruct [
     :room_id,
@@ -59,6 +63,8 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     do: cast(room_id, {:report_progress, current_s, duration_s})
   def add_message(room_id, msg),
     do: cast(room_id, {:add_message, msg})
+  def get_queue_page(room_id, offset, limit),
+    do: call(room_id, {:get_queue_page, offset, limit})
 
   defp via(id), do: {:via, Registry, {YoutubeVideoChatApp.RoomRegistry, id}}
 
@@ -93,6 +99,17 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   @impl true
   def handle_call(:get_messages, _from, st) do
     {:reply, {:ok, st.messages}, st, @idle_timeout}
+  end
+
+  # --- get_queue_page: return a slice of the queue for pagination -------------
+
+  @impl true
+  def handle_call({:get_queue_page, offset, limit}, _from, st) do
+    items = st.queue
+    |> :queue.to_list()
+    |> Enum.drop(offset)
+    |> Enum.take(limit)
+    {:reply, {:ok, items, st.queue_length}, st, @idle_timeout}
   end
 
   # --- add_to_queue -----------------------------------------------------------
@@ -260,12 +277,17 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   # -- Filter queue (for remove operations) ------------------------------------
+  # We count removed items via fold instead of calling :queue.len/1 (which is O(n)).
+  # Since we're removing at most 1 item in practice, this is effectively O(n) once
+  # for the filter pass, not O(n) filter + O(n) len.
 
   defp filter_queue(st, filter_fn) do
-    new_queue = :queue.filter(filter_fn, st.queue)
+    {new_queue, removed} = :queue.fold(fn item, {q, r} ->
+      if filter_fn.(item), do: {:queue.in(item, q), r}, else: {q, r + 1}
+    end, {:queue.new(), 0}, st.queue)
     %{st |
       queue: new_queue,
-      queue_length: :queue.len(new_queue)
+      queue_length: st.queue_length - removed
     }
   end
 
@@ -316,11 +338,17 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   # -- Public state snapshot ---------------------------------------------------
 
   defp public_state(st) do
+    # Send only the first N queue items to reduce WebSocket payload size.
+    # Clients request additional pages via get_queue_page/3.
+    queue_preview = st.queue
+    |> :queue.to_list()
+    |> Enum.take(@queue_broadcast_limit)
+
     %{
       current_track: st.current_track,
       started_at: st.started_at,
       server_now: now_ms(),
-      queue: :queue.to_list(st.queue),
+      queue: queue_preview,
       queue_length: st.queue_length
     }
   end

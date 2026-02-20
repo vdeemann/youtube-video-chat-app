@@ -64,9 +64,10 @@ function markUserInteracted() {
   } catch (_) {}
 }
 
-// Any user interaction on the page counts
+// Any user interaction on the page counts — use {once: true} so listeners
+// are automatically removed after the first interaction (no lingering handlers).
 ['click', 'keydown', 'touchstart'].forEach(evt => {
-  document.addEventListener(evt, markUserInteracted, { once: false, capture: true });
+  document.addEventListener(evt, markUserInteracted, { once: true, capture: true });
 });
 
 // ===========================================

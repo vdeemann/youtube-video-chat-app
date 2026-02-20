@@ -76,7 +76,6 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:show_grab_modal, false)
     |> assign(:import_url, "")
     |> assign(:importing, false)
-    |> assign(:queue_visible_count, 50)
 
     # Push player state to JS on connected mount
     socket = if connected?(socket) do
@@ -360,7 +359,15 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("load_more_queue", _params, socket) do
-    {:noreply, assign(socket, :queue_visible_count, socket.assigns.queue_visible_count + 50)}
+    current_count = length(socket.assigns.queue)
+    case RoomServer.get_queue_page(socket.assigns.room.id, current_count, 50) do
+      {:ok, items, total} ->
+        {:noreply, socket
+        |> assign(:queue, socket.assigns.queue ++ items)
+        |> assign(:queue_length, total)}
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
