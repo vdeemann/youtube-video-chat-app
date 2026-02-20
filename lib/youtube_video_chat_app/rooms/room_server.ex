@@ -16,9 +16,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   ## Performance
   - Queue uses Erlang `:queue` for O(1) append and O(1) pop.
-  - Broadcasts send only a limited preview of the queue (first 50 items)
-    plus total count, to avoid sending hundreds of items over WebSocket.
-  - Queue is capped at 500 items to prevent unbounded memory growth.
 
   Terminates after 30 min of inactivity.
   """
@@ -28,8 +25,6 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @idle_timeout :timer.minutes(30)
   @auto_advance_buffer_s 5
-  @max_queue_size 500
-  @queue_broadcast_limit 50
 
   defstruct [
     :room_id,
@@ -253,14 +248,10 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
   defp maybe_start_playing(st), do: st
 
-  # -- Enqueue tracks with O(1) append and size cap ----------------------------
+  # -- Enqueue tracks with O(1) append ----------------------------------------
 
   defp enqueue_tracks(st, new_tracks) do
-    # Only add tracks up to the max queue size
-    available = max(0, @max_queue_size - st.queue_length)
-    tracks_to_add = Enum.take(new_tracks, available)
-
-    Enum.reduce(tracks_to_add, st, fn track, acc ->
+    Enum.reduce(new_tracks, st, fn track, acc ->
       %{acc |
         queue: :queue.in(track, acc.queue),
         queue_length: acc.queue_length + 1
@@ -325,16 +316,11 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   # -- Public state snapshot ---------------------------------------------------
 
   defp public_state(st) do
-    # Send only the first N queue items to reduce WebSocket payload.
-    # The client shows a "and X more" indicator for the rest.
-    queue_list = :queue.to_list(st.queue)
-    queue_preview = Enum.take(queue_list, @queue_broadcast_limit)
-
     %{
       current_track: st.current_track,
       started_at: st.started_at,
       server_now: now_ms(),
-      queue: queue_preview,
+      queue: :queue.to_list(st.queue),
       queue_length: st.queue_length
     }
   end
