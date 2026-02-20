@@ -41,7 +41,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
     room_state = case RoomServer.get_state(room.id) do
       {:ok, s} -> s
-      {:error, _} -> %{current_track: nil, started_at: nil, server_now: now_ms(), queue: [], dj_order: []}
+      {:error, _} -> %{current_track: nil, started_at: nil, server_now: now_ms(), queue: [], queue_length: 0}
     end
 
     is_host = user.id == room.host_id or presence_before_join == 0
@@ -56,6 +56,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:messages, load_recent_messages(room.id))
     |> assign(:current_media, room_state.current_track)
     |> assign(:queue, room_state.queue)
+    |> assign(:queue_length, room_state[:queue_length] || length(room_state.queue))
     # UI state
     |> assign(:show_chat, true)
     |> assign(:show_queue, false)
@@ -389,9 +390,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       {:ok, %{name: name, tracks: tracks}} when tracks != [] ->
         case Playlists.create_playlist(%{name: name, user_id: user_id}) do
           {:ok, playlist} ->
-            Enum.each(tracks, fn track ->
-              Playlists.add_item_to_playlist(playlist.id, track)
-            end)
+            Playlists.add_items_to_playlist(playlist.id, tracks)
 
             playlists = Playlists.list_user_playlists_with_counts(user_id)
             playlist_with_items = Playlists.get_playlist_with_items!(playlist.id)
@@ -675,6 +674,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     socket = socket
     |> assign(:current_media, new_track)
     |> assign(:queue, state.queue)
+    |> assign(:queue_length, state[:queue_length] || length(state.queue))
 
     socket = if track_changed or went_to_nil do
       media = if new_track do

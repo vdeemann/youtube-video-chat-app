@@ -14,6 +14,12 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   4. **One broadcast** – every mutation that clients care about sends
      `{:room_state_changed, map}` so the LiveView has a single handler.
 
+  ## Performance
+  - Queue uses Erlang `:queue` for O(1) append and O(1) pop.
+  - Broadcasts send only a limited preview of the queue (first 50 items)
+    plus total count, to avoid sending hundreds of items over WebSocket.
+  - Queue is capped at 500 items to prevent unbounded memory growth.
+
   Terminates after 30 min of inactivity.
   """
   use GenServer
@@ -22,13 +28,16 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @idle_timeout :timer.minutes(30)
   @auto_advance_buffer_s 5
+  @max_queue_size 500
+  @queue_broadcast_limit 50
 
   defstruct [
     :room_id,
     :host_id,
     current_track: nil,       # media map or nil
     started_at: nil,          # ms since epoch when track position 0 corresponds to
-    queue: [],                # flat list of media maps in play order
+    queue: :queue.new(),      # Erlang :queue of media maps in play order
+    queue_length: 0,          # cached length for O(1) access
     track_timer: nil,         # timer ref for auto-advance
     messages: []              # recent chat messages
   ]
@@ -97,7 +106,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def handle_call({:add_to_queue, media_data, user}, _from, st) do
     media = build_media(media_data, user)
     st = st
-    |> insert_into_queue(user, [media])
+    |> enqueue_tracks([media])
     |> maybe_start_playing()
     broadcast(st)
     {:reply, {:ok, media}, st, @idle_timeout}
@@ -107,7 +116,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def handle_call({:add_multiple_to_queue, items, user}, _from, st) do
     medias = Enum.map(items, &build_media(&1, user))
     st = st
-    |> insert_into_queue(user, medias)
+    |> enqueue_tracks(medias)
     |> maybe_start_playing()
     broadcast(st)
     {:reply, {:ok, length(medias)}, st, @idle_timeout}
@@ -135,19 +144,18 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @impl true
   def handle_cast({:remove_from_queue, media_id}, st) do
-    st = %{st | queue: Enum.reject(st.queue, &(&1.id == media_id))}
+    st = filter_queue(st, fn item -> item.id != media_id end)
     broadcast(st)
     {:noreply, st, @idle_timeout}
   end
 
   @impl true
   def handle_cast({:remove_from_queue_by_user, media_id, user_id}, st) do
-    original_len = length(st.queue)
-    new_queue = Enum.reject(st.queue, &(&1.id == media_id && &1.added_by_id == user_id))
-    if length(new_queue) < original_len do
-      st = %{st | queue: new_queue}
-      broadcast(st)
-    end
+    old_len = st.queue_length
+    st = filter_queue(st, fn item ->
+      not (item.id == media_id && item.added_by_id == user_id)
+    end)
+    if st.queue_length < old_len, do: broadcast(st)
     {:noreply, st, @idle_timeout}
   end
 
@@ -155,7 +163,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   @impl true
   def handle_cast(:clear_queue, st) do
-    st = %{st | queue: []}
+    st = %{st | queue: :queue.new(), queue_length: 0}
     broadcast(st)
     {:noreply, st, @idle_timeout}
   end
@@ -207,18 +215,19 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   defp advance(st) do
     st = cancel_timer(st)
-    case st.queue do
-      [next | rest] ->
+    case :queue.out(st.queue) do
+      {{:value, next}, rest} ->
         st = %{st |
           current_track: next,
           started_at: now_ms(),
-          queue: rest
+          queue: rest,
+          queue_length: st.queue_length - 1
         }
         |> schedule_timer_for_track(next)
         broadcast(st)
         st
 
-      [] ->
+      {:empty, _} ->
         st = %{st | current_track: nil, started_at: nil}
         broadcast(st)
         st
@@ -227,24 +236,46 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   # -- Start playing if nothing is playing -------------------------------------
 
-  defp maybe_start_playing(%{current_track: nil, queue: [next | rest]} = st) do
-    st = %{st |
-      current_track: next,
-      started_at: now_ms(),
-      queue: rest
-    }
-    |> schedule_timer_for_track(next)
-    st
+  defp maybe_start_playing(%{current_track: nil} = st) do
+    case :queue.out(st.queue) do
+      {{:value, next}, rest} ->
+        %{st |
+          current_track: next,
+          started_at: now_ms(),
+          queue: rest,
+          queue_length: st.queue_length - 1
+        }
+        |> schedule_timer_for_track(next)
+
+      {:empty, _} ->
+        st
+    end
   end
   defp maybe_start_playing(st), do: st
 
-  # -- Round-robin insert: interleave new tracks fairly ------------------------
+  # -- Enqueue tracks with O(1) append and size cap ----------------------------
 
-  defp insert_into_queue(st, _user, new_tracks) do
-    # Insert each new track at the end of the queue.
-    Enum.reduce(new_tracks, st, fn track, acc ->
-      %{acc | queue: acc.queue ++ [track]}
+  defp enqueue_tracks(st, new_tracks) do
+    # Only add tracks up to the max queue size
+    available = max(0, @max_queue_size - st.queue_length)
+    tracks_to_add = Enum.take(new_tracks, available)
+
+    Enum.reduce(tracks_to_add, st, fn track, acc ->
+      %{acc |
+        queue: :queue.in(track, acc.queue),
+        queue_length: acc.queue_length + 1
+      }
     end)
+  end
+
+  # -- Filter queue (for remove operations) ------------------------------------
+
+  defp filter_queue(st, filter_fn) do
+    new_queue = :queue.filter(filter_fn, st.queue)
+    %{st |
+      queue: new_queue,
+      queue_length: :queue.len(new_queue)
+    }
   end
 
   # -- Timer helpers -----------------------------------------------------------
@@ -294,25 +325,17 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   # -- Public state snapshot ---------------------------------------------------
 
   defp public_state(st) do
-    # Return the raw started_at without capping.
-    #
-    # Previously this function tried to cap elapsed time to the track's
-    # duration to prevent seeking past the end on rejoin.  However, the
-    # initial duration stored on the track is a hardcoded guess (180s)
-    # from URL parsing.  If the real track is longer than 180s and the
-    # host hasn't reported progress yet (or everyone left and rejoined),
-    # the cap would force all clients to seek back to ~175s (2:55).
-    #
-    # The client-side sync loop already handles drift correction and
-    # end-of-track detection, so this server-side cap is unnecessary
-    # and actively harmful.  The host's progress reports update both
-    # started_at and the track's real duration, keeping everything
-    # calibrated without needing an artificial cap here.
+    # Send only the first N queue items to reduce WebSocket payload.
+    # The client shows a "and X more" indicator for the rest.
+    queue_list = :queue.to_list(st.queue)
+    queue_preview = Enum.take(queue_list, @queue_broadcast_limit)
+
     %{
       current_track: st.current_track,
       started_at: st.started_at,
       server_now: now_ms(),
-      queue: st.queue
+      queue: queue_preview,
+      queue_length: st.queue_length
     }
   end
 
