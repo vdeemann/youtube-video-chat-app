@@ -530,9 +530,14 @@ function pushVideoProgress(currentTime, duration) {
 }
 
 // ===========================================
-// SYNC LOOP (every 1.5s) — drift correction + progress reports
+// SYNC LOOP — drift correction + progress reports
 // ===========================================
+// Host syncs every 3s (progress reports needed for calibration).
+// Non-host syncs every 5s (only drift correction, no server writes).
+// This reduces CPU and network load on older hardware significantly.
+let _syncLoopCount = 0;
 setInterval(() => {
+  _syncLoopCount++;
   if (!window.playerState.startedAt) return;
   if (window.playerState.endTriggered) return;
 
@@ -550,6 +555,9 @@ setInterval(() => {
 
   if (!window.playerState.playerReady) return;
 
+  // Non-hosts only run every other tick (effectively every 6s instead of 3s)
+  if (!window.playerState.isHost && _syncLoopCount % 2 !== 0) return;
+
   // Grace period: don't drift-correct seeks for the first 2.5s after player creation,
   // giving the player time to load and seek to the initial position.
   // Progress reports are ALWAYS sent regardless of grace period.
@@ -566,8 +574,8 @@ setInterval(() => {
         pushVideoEnded();
         return;
       }
-      // Only drift-correct after grace period
-      if (!inGracePeriod && Math.abs(expected - cur) > 3) window.playerState.ytPlayer.seekTo(expected, true);
+      // Only drift-correct after grace period, with a wider threshold (5s)
+      if (!inGracePeriod && Math.abs(expected - cur) > 5) window.playerState.ytPlayer.seekTo(expected, true);
       // Host reports progress to keep the server's started_at calibrated
       if (window.playerState.isHost && cur > 0) pushVideoProgress(cur, dur || 0);
     } catch (_) {}
@@ -579,15 +587,15 @@ setInterval(() => {
     });
     window.scWidget.getPosition((pos) => {
       const cur = pos / 1000;
-      // Only drift-correct after grace period
-      if (!inGracePeriod && Math.abs(expected - cur) > 3) window.scWidget.seekTo(expected * 1000);
+      // Only drift-correct after grace period, with a wider threshold (5s)
+      if (!inGracePeriod && Math.abs(expected - cur) > 5) window.scWidget.seekTo(expected * 1000);
       // Host reports progress to keep the server's started_at calibrated
       if (window.playerState.isHost && cur > 0) {
         window.scWidget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
       }
     });
   }
-}, 1500);
+}, 3000);
 
 // ===========================================
 // LIVEVIEW HOOKS

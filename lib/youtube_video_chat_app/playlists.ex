@@ -162,6 +162,51 @@ defmodule YoutubeVideoChatApp.Playlists do
   end
 
   @doc """
+  Adds multiple items to a playlist in a single batch insert.
+  Much faster than calling add_item_to_playlist/2 in a loop for large playlists.
+  """
+  def add_items_to_playlist(playlist_id, items_attrs) when is_list(items_attrs) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+    # Get the current max position once
+    max_position =
+      PlaylistItem
+      |> where([i], i.playlist_id == ^playlist_id)
+      |> select([i], max(i.position))
+      |> Repo.one() || 0
+
+    # Build all rows with sequential positions
+    rows =
+      items_attrs
+      |> Enum.with_index(max_position + 1)
+      |> Enum.map(fn {attrs, position} ->
+        %{
+          id: Ecto.UUID.generate(),
+          playlist_id: playlist_id,
+          position: position,
+          media_type: attrs[:media_type] || attrs["media_type"],
+          media_id: attrs[:media_id] || attrs["media_id"],
+          title: attrs[:title] || attrs["title"] || "Unknown",
+          thumbnail: attrs[:thumbnail] || attrs["thumbnail"],
+          duration: attrs[:duration] || attrs["duration"],
+          embed_url: attrs[:embed_url] || attrs["embed_url"],
+          original_url: attrs[:original_url] || attrs["original_url"],
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    # Insert in chunks of 500 to avoid query size limits
+    rows
+    |> Enum.chunk_every(500)
+    |> Enum.each(fn chunk ->
+      Repo.insert_all(PlaylistItem, chunk)
+    end)
+
+    {:ok, length(rows)}
+  end
+
+  @doc """
   Removes an item from a playlist.
   """
   def remove_item_from_playlist(item_id) do
