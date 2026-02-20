@@ -73,6 +73,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:playlist_add_url, "")
     |> assign(:playlist_search_query, "")
     |> assign(:playlist_visible_count, 50)
+    |> assign(:filtered_playlist_items, [])
     |> assign(:show_grab_modal, false)
     |> assign(:import_url, "")
     |> assign(:importing, false)
@@ -119,6 +120,22 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       {playlists, main_with_items}
     else
       {[], nil}
+    end
+  end
+
+  # Refresh the cached user_playlists list and optionally the main_playlist.
+  # Called after any playlist mutation (create, delete, add/remove track, set/unset main).
+  defp refresh_playlists(socket, opts \\ []) do
+    user_id = socket.assigns.current_user.id
+    playlists = Playlists.list_user_playlists_with_counts(user_id)
+    socket = assign(socket, :user_playlists, playlists)
+
+    if Keyword.get(opts, :refresh_main, false) do
+      main = Enum.find(playlists, fn p -> p.is_main end)
+      main_with_items = if main, do: Playlists.get_playlist_with_items!(main.id), else: nil
+      assign(socket, :main_playlist, main_with_items)
+    else
+      socket
     end
   end
 
@@ -337,8 +354,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     if socket.assigns.is_guest do
       {:noreply, assign(socket, :show_login_prompt, true)}
     else
-      playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
-      {:noreply, assign(socket, show_playlist_modal: true, playlist_modal_view: :list, user_playlists: playlists, selected_playlist: nil)}
+      # Use cached playlists — they're refreshed after every mutation
+      {:noreply, assign(socket, show_playlist_modal: true, playlist_modal_view: :list, selected_playlist: nil)}
     end
   end
 
@@ -349,7 +366,24 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("playlist_search", %{"value" => query}, socket) do
-    {:noreply, assign(socket, playlist_search_query: query, playlist_visible_count: 50)}
+    socket = assign(socket, playlist_search_query: query, playlist_visible_count: 50)
+    {:noreply, compute_filtered_items(socket)}
+  end
+
+  # Pre-compute filtered items server-side so the template doesn't recompute on every render.
+  defp compute_filtered_items(socket) do
+    playlist = socket.assigns[:selected_playlist]
+    query = socket.assigns[:playlist_search_query]
+
+    if playlist && query && query != "" do
+      query_down = String.downcase(query)
+      filtered = Enum.filter(playlist.items, fn item ->
+        String.contains?(String.downcase(item.title), query_down)
+      end)
+      assign(socket, :filtered_playlist_items, filtered)
+    else
+      assign(socket, :filtered_playlist_items, (playlist && playlist.items) || [])
+    end
   end
 
   @impl true
@@ -405,20 +439,21 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
           {:ok, playlist} ->
             Playlists.add_items_to_playlist(playlist.id, tracks)
 
-            playlists = Playlists.list_user_playlists_with_counts(user_id)
             playlist_with_items = Playlists.get_playlist_with_items!(playlist.id)
+            socket = refresh_playlists(socket)
 
-            {:noreply,
-              socket
+            socket = socket
               |> assign(
                 importing: false,
                 import_url: "",
-                user_playlists: playlists,
                 playlist_modal_view: :show,
                 selected_playlist: playlist_with_items,
-                playlist_visible_count: 50
+                playlist_visible_count: 50,
+                playlist_search_query: ""
               )
-              |> put_flash(:info, "Imported '#{name}' with #{length(tracks)} tracks!")}
+              |> compute_filtered_items()
+
+            {:noreply, put_flash(socket, :info, "Imported '#{name}' with #{length(tracks)} tracks!")}
 
           {:error, _} ->
             {:noreply, assign(socket, importing: false) |> put_flash(:error, "Failed to create playlist")}
@@ -434,8 +469,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("playlist_back_to_list", _params, socket) do
-    playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
-    {:noreply, assign(socket, playlist_modal_view: :list, selected_playlist: nil, user_playlists: playlists, playlist_add_url: "", playlist_search_query: "")}
+    # Use cached playlists — no DB hit needed
+    {:noreply, assign(socket, playlist_modal_view: :list, selected_playlist: nil, playlist_add_url: "", playlist_search_query: "", playlist_visible_count: 50)}
   end
 
   @impl true
@@ -443,9 +478,10 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     user = socket.assigns.current_user
     case Playlists.create_playlist(%{name: name, user_id: user.id}) do
       {:ok, playlist} ->
-        playlists = Playlists.list_user_playlists_with_counts(user.id)
         playlist_with_items = Playlists.get_playlist_with_items!(playlist.id)
-        {:noreply, assign(socket, user_playlists: playlists, playlist_modal_view: :show, selected_playlist: playlist_with_items, new_playlist_name: "") |> put_flash(:info, "Playlist created!")}
+        socket = refresh_playlists(socket)
+        socket = assign(socket, playlist_modal_view: :show, selected_playlist: playlist_with_items, new_playlist_name: "", playlist_visible_count: 50, playlist_search_query: "")
+        {:noreply, compute_filtered_items(socket) |> put_flash(:info, "Playlist created!")}
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to create playlist")}
     end
@@ -453,23 +489,27 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("playlist_view", %{"id" => playlist_id}, socket) do
-    user = socket.assigns.current_user
-    case Playlists.get_user_playlist(user.id, playlist_id) do
-      nil -> {:noreply, put_flash(socket, :error, "Playlist not found")}
-      playlist ->
-        {:noreply, assign(socket, playlist_modal_view: :show, selected_playlist: Playlists.get_playlist_with_items!(playlist.id), playlist_visible_count: 50)}
+    # Single query: get_playlist_with_items! loads playlist + items in one go.
+    # Ownership is verified by checking the cached user_playlists list (no extra query).
+    owned? = Enum.any?(socket.assigns.user_playlists, fn p -> to_string(p.id) == to_string(playlist_id) end)
+    if owned? do
+      playlist = Playlists.get_playlist_with_items!(playlist_id)
+      socket = assign(socket, playlist_modal_view: :show, selected_playlist: playlist, playlist_visible_count: 50, playlist_search_query: "")
+      {:noreply, compute_filtered_items(socket)}
+    else
+      {:noreply, put_flash(socket, :error, "Playlist not found")}
     end
   end
 
   @impl true
   def handle_event("playlist_delete", %{"id" => playlist_id}, socket) do
-    user = socket.assigns.current_user
-    if playlist = Playlists.get_user_playlist(user.id, playlist_id) do
+    # Verify ownership from cached list (no DB query)
+    owned? = Enum.any?(socket.assigns.user_playlists, fn p -> to_string(p.id) == to_string(playlist_id) end)
+    if owned? do
+      playlist = Playlists.get_playlist!(playlist_id)
       Playlists.delete_playlist(playlist)
-      playlists = Playlists.list_user_playlists_with_counts(user.id)
-      main = Enum.find(playlists, fn p -> p.is_main end)
-      main_with_items = if main, do: Playlists.get_playlist_with_items!(main.id), else: nil
-      {:noreply, assign(socket, user_playlists: playlists, main_playlist: main_with_items, playlist_modal_view: :list, selected_playlist: nil) |> put_flash(:info, "Playlist deleted")}
+      socket = refresh_playlists(socket, refresh_main: true)
+      {:noreply, assign(socket, playlist_modal_view: :list, selected_playlist: nil) |> put_flash(:info, "Playlist deleted")}
     else
       {:noreply, socket}
     end
@@ -479,23 +519,19 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   def handle_event("playlist_set_main", %{"id" => playlist_id}, socket) do
     user = socket.assigns.current_user
     Playlists.set_main_playlist(user.id, playlist_id)
-    playlists = Playlists.list_user_playlists_with_counts(user.id)
-    main = Enum.find(playlists, fn p -> p.is_main end)
-    main_with_items = if main, do: Playlists.get_playlist_with_items!(main.id), else: nil
-    {:noreply, assign(socket, user_playlists: playlists, main_playlist: main_with_items) |> put_flash(:info, "Main playlist updated!")}
+    socket = refresh_playlists(socket, refresh_main: true)
+    {:noreply, socket |> put_flash(:info, "Main playlist updated!")}
   end
 
   @impl true
   def handle_event("playlist_unset_main", %{"id" => playlist_id}, socket) do
     user = socket.assigns.current_user
-    if playlist = Playlists.get_user_playlist(user.id, playlist_id) do
-      if playlist.is_main do
-        Playlists.unset_main_playlist(user.id)
-        playlists = Playlists.list_user_playlists_with_counts(user.id)
-        {:noreply, assign(socket, user_playlists: playlists, main_playlist: nil) |> put_flash(:info, "Main playlist unset")}
-      else
-        {:noreply, socket}
-      end
+    # Verify it's actually main from cached list
+    is_main? = Enum.any?(socket.assigns.user_playlists, fn p -> to_string(p.id) == to_string(playlist_id) and p.is_main end)
+    if is_main? do
+      Playlists.unset_main_playlist(user.id)
+      socket = refresh_playlists(socket)
+      {:noreply, assign(socket, main_playlist: nil) |> put_flash(:info, "Main playlist unset")}
     else
       {:noreply, socket}
     end
@@ -510,11 +546,15 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       media_data ->
         item_attrs = %{media_type: media_data["type"], media_id: media_data["media_id"], title: media_data["title"], thumbnail: media_data["thumbnail"], duration: media_data["duration"], embed_url: media_data["embed_url"], original_url: url}
         case Playlists.add_item_to_playlist(playlist.id, item_attrs) do
-          {:ok, _item} ->
-            updated_playlist = Playlists.get_playlist_with_items!(playlist.id)
-            playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
-            main_with_items = if socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist.id, do: updated_playlist, else: socket.assigns.main_playlist
-            {:noreply, assign(socket, selected_playlist: updated_playlist, user_playlists: playlists, main_playlist: main_with_items, playlist_add_url: "") |> put_flash(:info, "Track added!")}
+          {:ok, new_item} ->
+            # Append the new item in-memory instead of reloading all items
+            new_item = Playlists.get_playlist_item!(new_item.id)
+            updated_items = playlist.items ++ [new_item]
+            updated_playlist = %{playlist | items: updated_items}
+            is_main = socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist.id
+            socket = refresh_playlists(socket, refresh_main: is_main)
+            socket = assign(socket, selected_playlist: updated_playlist, playlist_add_url: "")
+            {:noreply, compute_filtered_items(socket) |> put_flash(:info, "Track added!")}
           {:error, _} ->
             {:noreply, put_flash(socket, :error, "Failed to add track")}
         end
@@ -525,50 +565,72 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   def handle_event("playlist_remove_track", %{"id" => item_id}, socket) do
     Playlists.remove_item_from_playlist(item_id)
     playlist = socket.assigns.selected_playlist
-    updated_playlist = Playlists.get_playlist_with_items!(playlist.id)
-    playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
-    main_with_items = if socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist.id, do: updated_playlist, else: socket.assigns.main_playlist
-    {:noreply, assign(socket, selected_playlist: updated_playlist, user_playlists: playlists, main_playlist: main_with_items)}
+    # Remove item in-memory instead of reloading all items from DB
+    updated_items = Enum.reject(playlist.items, fn i -> to_string(i.id) == to_string(item_id) end)
+    updated_playlist = %{playlist | items: updated_items}
+    is_main = socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist.id
+    socket = refresh_playlists(socket, refresh_main: is_main)
+    socket = assign(socket, selected_playlist: updated_playlist)
+    {:noreply, compute_filtered_items(socket)}
   end
 
   @impl true
   def handle_event("playlist_move_track_up", %{"id" => item_id}, socket) do
-    item = Playlists.get_playlist_item!(item_id)
-    if item.position > 1, do: Playlists.move_item(item_id, item.position - 1)
-    updated_playlist = Playlists.get_playlist_with_items!(socket.assigns.selected_playlist.id)
-    {:noreply, assign(socket, selected_playlist: updated_playlist)}
+    playlist = socket.assigns.selected_playlist
+    items = playlist.items
+    idx = Enum.find_index(items, fn i -> to_string(i.id) == to_string(item_id) end)
+    if idx && idx > 0 do
+      item = Enum.at(items, idx)
+      Playlists.move_item(item.id, item.position - 1)
+      # Swap in-memory instead of reloading all items from DB
+      updated_items = items |> List.replace_at(idx, Enum.at(items, idx - 1)) |> List.replace_at(idx - 1, item)
+      socket = assign(socket, selected_playlist: %{playlist | items: updated_items})
+      {:noreply, compute_filtered_items(socket)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_event("playlist_move_track_down", %{"id" => item_id}, socket) do
-    item = Playlists.get_playlist_item!(item_id)
-    max_pos = length(socket.assigns.selected_playlist.items)
-    if item.position < max_pos, do: Playlists.move_item(item_id, item.position + 1)
-    updated_playlist = Playlists.get_playlist_with_items!(socket.assigns.selected_playlist.id)
-    {:noreply, assign(socket, selected_playlist: updated_playlist)}
+    playlist = socket.assigns.selected_playlist
+    items = playlist.items
+    idx = Enum.find_index(items, fn i -> to_string(i.id) == to_string(item_id) end)
+    if idx && idx < length(items) - 1 do
+      item = Enum.at(items, idx)
+      Playlists.move_item(item.id, item.position + 1)
+      # Swap in-memory instead of reloading all items from DB
+      updated_items = items |> List.replace_at(idx, Enum.at(items, idx + 1)) |> List.replace_at(idx + 1, item)
+      socket = assign(socket, selected_playlist: %{playlist | items: updated_items})
+      {:noreply, compute_filtered_items(socket)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_event("load_playlist_to_queue", %{"id" => playlist_id}, socket) do
-    user = socket.assigns.current_user
-    case Playlists.get_user_playlist(user.id, playlist_id) do
-      nil -> {:noreply, put_flash(socket, :error, "Playlist not found")}
-      playlist ->
-        playlist = Playlists.get_playlist_with_items!(playlist.id)
-        if Enum.empty?(playlist.items) do
-          {:noreply, put_flash(socket, :error, "This playlist is empty")}
-        else
-          media_items = Enum.map(playlist.items, fn item ->
-            %{type: item.media_type, media_id: item.media_id, title: item.title, thumbnail: item.thumbnail, duration: item.duration, embed_url: item.embed_url, original_url: item.original_url}
-          end)
-          room_user = Accounts.user_to_room_user(user)
-          case RoomServer.add_multiple_to_queue(socket.assigns.room.id, media_items, room_user) do
-            {:ok, count} ->
-              {:noreply, socket |> assign(:show_playlist_modal, false) |> put_flash(:info, "Loaded #{count} tracks from '#{playlist.name}'")}
-            {:error, _} ->
-              {:noreply, put_flash(socket, :error, "Failed to load playlist")}
-          end
+    # Verify ownership from cached list (no extra query)
+    owned? = Enum.any?(socket.assigns.user_playlists, fn p -> to_string(p.id) == to_string(playlist_id) end)
+    if !owned? do
+      {:noreply, put_flash(socket, :error, "Playlist not found")}
+    else
+      user = socket.assigns.current_user
+      playlist = Playlists.get_playlist_with_items!(playlist_id)
+      if Enum.empty?(playlist.items) do
+        {:noreply, put_flash(socket, :error, "This playlist is empty")}
+      else
+        media_items = Enum.map(playlist.items, fn item ->
+          %{type: item.media_type, media_id: item.media_id, title: item.title, thumbnail: item.thumbnail, duration: item.duration, embed_url: item.embed_url, original_url: item.original_url}
+        end)
+        room_user = Accounts.user_to_room_user(user)
+        case RoomServer.add_multiple_to_queue(socket.assigns.room.id, media_items, room_user) do
+          {:ok, count} ->
+            {:noreply, socket |> assign(:show_playlist_modal, false) |> put_flash(:info, "Loaded #{count} tracks from '#{playlist.name}'")}
+          {:error, _} ->
+            {:noreply, put_flash(socket, :error, "Failed to load playlist")}
         end
+      end
     end
   end
 
@@ -577,8 +639,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     if socket.assigns.is_guest do
       {:noreply, assign(socket, :show_login_prompt, true)}
     else
-      playlists = Playlists.list_user_playlists_with_counts(socket.assigns.current_user.id)
-      {:noreply, assign(socket, show_grab_modal: true, user_playlists: playlists)}
+      # Use cached playlists — no extra DB query
+      {:noreply, assign(socket, show_grab_modal: true)}
     end
   end
 
@@ -589,7 +651,6 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
   @impl true
   def handle_event("grab_to_playlist", %{"playlist-id" => playlist_id}, socket) do
-    user = socket.assigns.current_user
     cm = socket.assigns.current_media
     if cm do
       item_attrs = %{
@@ -603,10 +664,14 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       }
       case Playlists.add_item_to_playlist(playlist_id, item_attrs) do
         {:ok, _} ->
-          playlist = Playlists.get_playlist!(playlist_id)
-          playlists = Playlists.list_user_playlists_with_counts(user.id)
-          main_with_items = if socket.assigns.main_playlist && socket.assigns.main_playlist.id == playlist_id, do: Playlists.get_playlist_with_items!(playlist_id), else: socket.assigns.main_playlist
-          {:noreply, assign(socket, show_grab_modal: false, user_playlists: playlists, main_playlist: main_with_items) |> put_flash(:info, "Added to '#{playlist.name}'!")}
+          # Get name from cached list instead of extra DB query
+          playlist_name = case Enum.find(socket.assigns.user_playlists, fn p -> to_string(p.id) == to_string(playlist_id) end) do
+            nil -> "playlist"
+            p -> p.name
+          end
+          is_main = socket.assigns.main_playlist && to_string(socket.assigns.main_playlist.id) == to_string(playlist_id)
+          socket = refresh_playlists(socket, refresh_main: is_main)
+          {:noreply, assign(socket, show_grab_modal: false) |> put_flash(:info, "Added to '#{playlist_name}'!")}
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to add track")}
       end
@@ -634,8 +699,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
           }
           case Playlists.add_item_to_playlist(playlist.id, item_attrs) do
             {:ok, _} ->
-              playlists = Playlists.list_user_playlists_with_counts(user.id)
-              {:noreply, assign(socket, show_grab_modal: false, user_playlists: playlists) |> put_flash(:info, "Created '#{playlist_name}' and added track!")}
+              socket = refresh_playlists(socket)
+              {:noreply, assign(socket, show_grab_modal: false) |> put_flash(:info, "Created '#{playlist_name}' and added track!")}
             {:error, _} ->
               {:noreply, put_flash(socket, :error, "Failed to add track to new playlist")}
           end
@@ -684,10 +749,21 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     # Detect transition to nil (queue exhausted) — always push so client shows placeholder
     went_to_nil = old_media != nil && new_track == nil
 
-    socket = socket
-    |> assign(:current_media, new_track)
-    |> assign(:queue, state.queue)
-    |> assign(:queue_length, state[:queue_length] || length(state.queue))
+    # Only update queue assigns when the queue actually changed.
+    # Progress reports broadcast state every 3-6s but don't change the queue,
+    # so skipping the assign avoids LiveView diffing the entire queue list.
+    new_queue_length = state[:queue_length] || length(state.queue)
+    queue_changed = new_queue_length != socket.assigns.queue_length or track_changed
+
+    socket = assign(socket, :current_media, new_track)
+
+    socket = if queue_changed do
+      socket
+      |> assign(:queue, state.queue)
+      |> assign(:queue_length, new_queue_length)
+    else
+      socket
+    end
 
     socket = if track_changed or went_to_nil do
       media = if new_track do
