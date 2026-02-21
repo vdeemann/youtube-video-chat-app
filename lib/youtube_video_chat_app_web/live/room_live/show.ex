@@ -749,13 +749,19 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     # Detect transition to nil (queue exhausted) — always push so client shows placeholder
     went_to_nil = old_media != nil && new_track == nil
 
-    # Only update queue assigns when the queue actually changed.
-    # Progress reports broadcast state every 3-6s but don't change the queue,
-    # so skipping the assign avoids LiveView diffing the entire queue list.
+    # Only update assigns when they actually changed.
+    # Skipping unchanged assigns avoids forcing LiveView to diff-check
+    # the entire template (queue list, now-playing section, modal DOM).
     new_queue_length = state[:queue_length] || length(state.queue)
     queue_changed = new_queue_length != socket.assigns.queue_length or track_changed
 
-    socket = assign(socket, :current_media, new_track)
+    # Only re-assign current_media when the track changed — avoids creating
+    # a new map reference that would force LiveView to diff the Now Playing section.
+    socket = if track_changed or went_to_nil do
+      assign(socket, :current_media, new_track)
+    else
+      socket
+    end
 
     socket = if queue_changed do
       socket

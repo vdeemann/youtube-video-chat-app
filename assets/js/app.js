@@ -459,7 +459,13 @@ function initSoundCloud(startPosition) {
     }
   });
 
+  // Throttle PLAY_PROGRESS — SoundCloud fires this many times per second.
+  // Only check every 2 seconds to reduce CPU load on older hardware.
+  let _lastProgressCheck = 0;
   widget.bind(window.SC.Widget.Events.PLAY_PROGRESS, (data) => {
+    const now = Date.now();
+    if (now - _lastProgressCheck < 2000) return;
+    _lastProgressCheck = now;
     if (data.relativePosition > 0.99 && !window.playerState.endTriggered) {
       window.playerState.endTriggered = true;
       pushVideoEnded();
@@ -533,9 +539,8 @@ function pushVideoProgress(currentTime, duration) {
 // ===========================================
 // SYNC LOOP — drift correction + progress reports
 // ===========================================
-// Host syncs every 3s (progress reports needed for calibration).
-// Non-host syncs every 5s (only drift correction, no server writes).
-// This reduces CPU and network load on older hardware significantly.
+// Runs every 5s. Hosts report progress every tick (5s).
+// Non-hosts only drift-correct every 3rd tick (15s) to save CPU.
 let _syncLoopCount = 0;
 setInterval(() => {
   _syncLoopCount++;
@@ -556,8 +561,8 @@ setInterval(() => {
 
   if (!window.playerState.playerReady) return;
 
-  // Non-hosts only run every other tick (effectively every 6s instead of 3s)
-  if (!window.playerState.isHost && _syncLoopCount % 2 !== 0) return;
+  // Non-hosts only run every 3rd tick (effectively every 15s instead of 5s)
+  if (!window.playerState.isHost && _syncLoopCount % 3 !== 0) return;
 
   // Grace period: don't drift-correct seeks for the first 2.5s after player creation,
   // giving the player time to load and seek to the initial position.
@@ -565,7 +570,10 @@ setInterval(() => {
   const age = Date.now() - (window.playerState._createdAt || 0);
   const inGracePeriod = age < 2500;
 
-  if (window.playerState.mediaType === "youtube" && window.playerState.ytPlayer) {
+  const mediaType = window.playerState.mediaType;
+
+  // Early-exit: only check the active player type (not both)
+  if (mediaType === "youtube" && window.playerState.ytPlayer) {
     try {
       const cur = window.playerState.ytPlayer.getCurrentTime();
       const dur = window.playerState.ytPlayer.getDuration();
@@ -580,9 +588,7 @@ setInterval(() => {
       // Host reports progress to keep the server's started_at calibrated
       if (window.playerState.isHost && cur > 0) pushVideoProgress(cur, dur || 0);
     } catch (_) {}
-  }
-
-  if (window.playerState.mediaType === "soundcloud" && window.scWidget) {
+  } else if (mediaType === "soundcloud" && window.scWidget) {
     window.scWidget.isPaused((paused) => {
       if (paused && !window.playerState.endTriggered) window.scWidget.play();
     });
@@ -596,7 +602,7 @@ setInterval(() => {
       }
     });
   }
-}, 3000);
+}, 5000);
 
 // ===========================================
 // LIVEVIEW HOOKS
