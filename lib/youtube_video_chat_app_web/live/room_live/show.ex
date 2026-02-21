@@ -190,9 +190,12 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   @impl true
-  def handle_event("video_ended", _params, socket) do
-    # Any client can report; server deduplicates
-    RoomServer.track_ended(socket.assigns.room.id)
+  def handle_event("video_ended", params, socket) do
+    # Pass the track ID so the server can deduplicate — a newly-joined
+    # client whose player fires a spurious "ended" event during load
+    # won't skip the track that everyone else is still listening to.
+    track_id = params["track_id"]
+    RoomServer.track_ended(socket.assigns.room.id, track_id)
     {:noreply, socket}
   end
 

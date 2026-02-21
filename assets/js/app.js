@@ -505,23 +505,38 @@ function showPlaceholder() {
 // PUSH EVENTS TO SERVER
 // ===========================================
 function pushVideoEnded() {
-  console.log("[pushVideoEnded] Attempting to notify server");
+  // Grace period: don't report "ended" within the first 5 seconds after player
+  // creation.  Newly-joined clients sometimes get a spurious state-0 / FINISH
+  // event while the player is still loading and seeking to the live position.
+  const age = Date.now() - (window.playerState._createdAt || 0);
+  if (age < 5000) {
+    console.log("[pushVideoEnded] Suppressed — player is only", Math.round(age/1000), "s old (grace period)");
+    window.playerState.endTriggered = false;   // allow a real ended event later
+    return;
+  }
+
+  // Include the track ID so the server can deduplicate (prevents stale reports
+  // from a client that was still playing the previous track from skipping the new one).
+  const trackId = window.playerState.trackId || null;
+  console.log("[pushVideoEnded] Notifying server, trackId:", trackId);
+  const payload = { track_id: trackId };
+
   // Primary: use the window-level reference set by RoomHook
   if (window._roomHookPushEvent) {
-    window._roomHookPushEvent("video_ended", {});
+    window._roomHookPushEvent("video_ended", payload);
     return;
   }
   // Fallback 1: DOM element reference
   const hook = document.getElementById('room-container');
   if (hook?._phxHookPushEvent) {
-    hook._phxHookPushEvent("video_ended", {});
+    hook._phxHookPushEvent("video_ended", payload);
     return;
   }
   // Fallback 2: find view directly
   if (window.liveSocket) {
     const view = document.querySelector('[data-phx-main]');
     const inst = view && window.liveSocket.getViewByEl(view);
-    if (inst) inst.pushEvent("video_ended", {});
+    if (inst) inst.pushEvent("video_ended", payload);
   }
 }
 

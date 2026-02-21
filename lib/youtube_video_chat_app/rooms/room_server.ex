@@ -52,7 +52,8 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def add_multiple_to_queue(room_id, items, u),
     do: call(room_id, {:add_multiple_to_queue, items, u})
   def play_next(room_id),          do: call(room_id, :play_next)
-  def track_ended(room_id),        do: call(room_id, :track_ended)
+  def track_ended(room_id, track_id \\ nil),
+    do: call(room_id, {:track_ended, track_id})
   def remove_from_queue(room_id, id),
     do: cast(room_id, {:remove_from_queue, id})
   def remove_from_queue_by_user(room_id, id, uid),
@@ -142,13 +143,27 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   # --- track_ended (any client reports) ---------------------------------------
+  # Deduplicated: if a track_id is provided, only advance when it matches the
+  # currently-playing track.  This prevents a newly-joined client whose player
+  # fires a spurious "ended" event from skipping the track that everyone else
+  # is still listening to.
 
   @impl true
-  def handle_call(:track_ended, _from, st) do
-    if st.current_track do
-      {:reply, :ok, advance(st), @idle_timeout}
-    else
-      {:reply, :ok, st, @idle_timeout}
+  def handle_call({:track_ended, reported_id}, _from, st) do
+    current_id = st.current_track && st.current_track.id
+    cond do
+      # Nothing playing — ignore
+      current_id == nil ->
+        {:reply, :ok, st, @idle_timeout}
+
+      # Client sent a track_id that doesn't match what's playing — stale/spurious, ignore
+      reported_id != nil and reported_id != current_id ->
+        Logger.debug("[RoomServer] Ignoring stale track_ended for #{reported_id}, current is #{current_id}")
+        {:reply, :ok, st, @idle_timeout}
+
+      # Matches (or legacy client sent nil) — advance
+      true ->
+        {:reply, :ok, advance(st), @idle_timeout}
     end
   end
 
