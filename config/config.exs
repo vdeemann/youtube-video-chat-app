@@ -20,6 +20,11 @@ config :youtube_video_chat_app, YoutubeVideoChatAppWeb.Endpoint,
 # Configures the mailer
 config :youtube_video_chat_app, YoutubeVideoChatApp.Mailer, adapter: Swoosh.Adapters.Local
 
+# Essentia audio analysis sidecar (see analyzer/).  When url is nil the
+# key/BPM/chord detection feature is disabled and enqueued tracks are
+# simply not analyzed.  Overridden per-env and by ANALYZER_URL at runtime.
+config :youtube_video_chat_app, :audio_analyzer, url: nil
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.17.11",

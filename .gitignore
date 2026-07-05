@@ -71,3 +71,9 @@ test/fixtures/html/*.html
 
 # Script logs
 scripts/**/*.log
+
+# ChordMini vendor checkout (cloned by scripts/setup_chordmini.sh)
+/vendor/
+
+# Python bytecode
+__pycache__/

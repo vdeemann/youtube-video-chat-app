@@ -16,6 +16,9 @@ config :youtube_video_chat_app, YoutubeVideoChatAppWeb.Endpoint,
   secret_key_base: "test_secret_key_base_at_least_64_bytes_long_1234567890123456789012",
   server: false
 
+# No analyzer sidecar in test — analysis requests are silently dropped.
+config :youtube_video_chat_app, :audio_analyzer, url: nil
+
 # In test we don't send emails.
 config :youtube_video_chat_app, YoutubeVideoChatApp.Mailer, adapter: Swoosh.Adapters.Test
 

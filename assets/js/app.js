@@ -237,6 +237,48 @@ function getLivePosition() {
 }
 
 // ===========================================
+// CHORD DISPLAY — live chord readout synced to playback
+// ===========================================
+// The server pushes "track_analysis" with the chord timeline for the
+// current track: segments [{t: seconds, c: "Am"}, ...] sorted by t.
+// Position comes from the same server-authoritative clock the player
+// sync uses (startedAt + clockOffset), so the readout follows seeks
+// and drift corrections for free.
+let _chordSegments = [];
+let _chordTicker = null;
+let _chordIdx = 0;
+
+function setChordSegments(segments) {
+  _chordSegments = Array.isArray(segments) ? segments : [];
+  _chordIdx = 0;
+  updateChordDisplay();
+  if (_chordSegments.length > 0) {
+    if (!_chordTicker) _chordTicker = setInterval(updateChordDisplay, 500);
+  } else if (_chordTicker) {
+    clearInterval(_chordTicker);
+    _chordTicker = null;
+  }
+}
+
+function updateChordDisplay() {
+  const el = document.getElementById('current-chord');
+  if (!el) return;
+  if (!_chordSegments.length || !window.playerState.startedAt) {
+    el.textContent = '—';
+    return;
+  }
+  const pos = getLivePosition();
+  // Segments are sorted; walk from the last known index so this is O(1)
+  // per tick, while still handling seeks in either direction.
+  let i = Math.min(_chordIdx, _chordSegments.length - 1);
+  while (i > 0 && _chordSegments[i].t > pos) i--;
+  while (i < _chordSegments.length - 1 && _chordSegments[i + 1].t <= pos) i++;
+  _chordIdx = i;
+  const chord = _chordSegments[i].t <= pos ? _chordSegments[i].c : null;
+  el.textContent = chord && chord !== 'N' ? chord : '—';
+}
+
+// ===========================================
 // SYNC PLAYER — the ONE entry point
 // ===========================================
 // Called on mount and whenever the server broadcasts a state change.
@@ -683,6 +725,12 @@ const RoomHook = {
       try { window.scWidget?.play?.(); } catch(_) {}
     });
 
+    // Chord timeline for the current track.  Pushed on mount and on every
+    // track change (empty when no analysis exists, clearing stale chords).
+    this.handleEvent("track_analysis", (data) => {
+      setChordSegments(data.chords || []);
+    });
+
     this.handleEvent("show_reaction", (data) => {
       const c = document.getElementById("reactions-container");
       if (!c) return;
@@ -697,6 +745,7 @@ const RoomHook = {
   },
   destroyed() {
     window._roomHookPushEvent = null;
+    setChordSegments([]);
   }
 };
 

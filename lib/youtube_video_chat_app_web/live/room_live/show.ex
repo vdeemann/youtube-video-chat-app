@@ -1,6 +1,6 @@
 defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   use YoutubeVideoChatAppWeb, :live_view
-  alias YoutubeVideoChatApp.{Rooms, Accounts, Playlists}
+  alias YoutubeVideoChatApp.{Rooms, Accounts, Playlists, AudioAnalysis}
   alias YoutubeVideoChatApp.Rooms.RoomServer
   alias YoutubeVideoChatAppWeb.Presence
   alias Phoenix.PubSub
@@ -24,6 +24,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
     if connected?(socket) do
       PubSub.subscribe(YoutubeVideoChatApp.PubSub, "room:#{room.id}")
+      AudioAnalysis.subscribe()
 
       {:ok, _} = Presence.track(self(), "room:#{room.id}", user.id, %{
         username: user.username,
@@ -57,6 +58,9 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     |> assign(:current_media, room_state.current_track)
     |> assign(:queue, room_state.queue)
     |> assign(:queue_length, room_state[:queue_length] || length(room_state.queue))
+    # Audio analysis (key/BPM/chords) state
+    |> assign(:current_analysis, fetch_analysis(room_state.current_track))
+    |> assign(:queue_analyses, AudioAnalysis.get_payloads(analysis_keys(room_state.queue)))
     # UI state
     |> assign(:show_chat, true)
     |> assign(:show_queue, false)
@@ -80,7 +84,13 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
     # Push player state to JS on connected mount
     socket = if connected?(socket) do
-      push_player_state(socket, room_state, is_host)
+      # If the playing track has no analysis (server restarted, cache
+      # cleared), request one now — deduped, so this is free when cached.
+      maybe_request_analysis(room_state.current_track, socket.assigns.current_analysis)
+
+      socket
+      |> push_player_state(room_state, is_host)
+      |> push_track_analysis(socket.assigns.current_analysis)
     else
       socket
     end
@@ -111,6 +121,50 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   defp now_ms, do: System.system_time(:millisecond)
+
+  # ── Audio analysis helpers ──────────────────────────────────────────────────
+
+  defp media_key(nil), do: nil
+  defp media_key(media) do
+    {Map.get(media, :type) || Map.get(media, "type"),
+     Map.get(media, :media_id) || Map.get(media, "media_id")}
+  end
+
+  defp analysis_keys(queue) do
+    queue |> Enum.map(&media_key/1) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+  end
+
+  defp fetch_analysis(nil), do: nil
+  defp fetch_analysis(media) do
+    {type, id} = media_key(media)
+    AudioAnalysis.payload(AudioAnalysis.get(type, id))
+  end
+
+  # Request analysis for a playing track that has none — urgent so it skips
+  # ahead of any bulk playlist backlog.  The worker dedupes repeat requests.
+  defp maybe_request_analysis(nil, _payload), do: :ok
+  defp maybe_request_analysis(_media, %{}), do: :ok
+  defp maybe_request_analysis(media, nil), do: AudioAnalysis.request_for_media(media, priority: :urgent)
+
+  # Keep the queue_analyses map in sync with the visible queue, only querying
+  # the DB for keys we haven't already looked up.
+  defp refresh_queue_analyses(socket, queue) do
+    keys = analysis_keys(queue)
+    kept = Map.take(socket.assigns.queue_analyses, keys)
+    missing = Enum.reject(keys, &Map.has_key?(kept, &1))
+    assign(socket, :queue_analyses, Map.merge(kept, AudioAnalysis.get_payloads(missing)))
+  end
+
+  # Push the current track's chord timeline to the JS hook.  Always pushed on
+  # track change — an empty payload clears a stale chord display.
+  defp push_track_analysis(socket, payload) do
+    push_event(socket, "track_analysis", %{
+      key: payload && payload.key,
+      scale: payload && payload.scale,
+      bpm: payload && payload.bpm,
+      chords: (payload && payload.chords) || []
+    })
+  end
 
   defp load_playlists(socket) do
     if socket.assigns[:current_user] do
@@ -399,9 +453,11 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     current_count = length(socket.assigns.queue)
     case RoomServer.get_queue_page(socket.assigns.room.id, current_count, 50) do
       {:ok, items, total} ->
+        new_queue = socket.assigns.queue ++ items
         {:noreply, socket
-        |> assign(:queue, socket.assigns.queue ++ items)
-        |> assign(:queue_length, total)}
+        |> assign(:queue, new_queue)
+        |> assign(:queue_length, total)
+        |> refresh_queue_analyses(new_queue)}
       _ ->
         {:noreply, socket}
     end
@@ -761,7 +817,12 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     # Only re-assign current_media when the track changed — avoids creating
     # a new map reference that would force LiveView to diff the Now Playing section.
     socket = if track_changed or went_to_nil do
-      assign(socket, :current_media, new_track)
+      analysis = fetch_analysis(new_track)
+      maybe_request_analysis(new_track, analysis)
+
+      socket
+      |> assign(:current_media, new_track)
+      |> assign(:current_analysis, analysis)
     else
       socket
     end
@@ -770,6 +831,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       socket
       |> assign(:queue, state.queue)
       |> assign(:queue_length, new_queue_length)
+      |> refresh_queue_analyses(state.queue)
     else
       socket
     end
@@ -785,15 +847,43 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         }
       end
 
-      push_event(socket, "sync_player", %{
+      socket
+      |> push_event("sync_player", %{
         media: media,
         started_at: state.started_at,
         server_now: state.server_now,
         is_host: socket.assigns.is_host
       })
+      |> push_track_analysis(socket.assigns.current_analysis)
     else
       socket
     end
+
+    {:noreply, socket}
+  end
+
+  # A track finished analyzing somewhere — update our UI if we're playing or
+  # queueing that track.  Low traffic: at most one message per analyzed track
+  # globally (the analysis worker is serial).
+  @impl true
+  def handle_info({:track_analysis, payload}, socket) do
+    key = {payload.media_type, payload.media_id}
+
+    socket =
+      if media_key(socket.assigns.current_media) == key do
+        socket
+        |> assign(:current_analysis, payload)
+        |> push_track_analysis(payload)
+      else
+        socket
+      end
+
+    socket =
+      if Enum.any?(socket.assigns.queue, &(media_key(&1) == key)) do
+        assign(socket, :queue_analyses, Map.put(socket.assigns.queue_analyses, key, payload))
+      else
+        socket
+      end
 
     {:noreply, socket}
   end

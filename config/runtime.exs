@@ -5,6 +5,11 @@ import Config
 # system starts, so it is typically used to load production configuration
 # and secrets from environment variables or elsewhere.
 
+# Essentia analyzer sidecar — any environment can point at one at runtime.
+if analyzer_url = System.get_env("ANALYZER_URL") do
+  config :youtube_video_chat_app, :audio_analyzer, url: analyzer_url
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

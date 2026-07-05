@@ -14,6 +14,10 @@ defmodule YoutubeVideoChatApp.Application do
       {Phoenix.PubSub, name: YoutubeVideoChatApp.PubSub},
       # Start the Finch HTTP client for API requests
       {Finch, name: YoutubeVideoChatApp.Finch},
+      # Task supervisor for background jobs (audio analysis calls)
+      {Task.Supervisor, name: YoutubeVideoChatApp.TaskSupervisor},
+      # Serial worker that sends tracks to the Essentia analyzer sidecar
+      YoutubeVideoChatApp.AudioAnalysis.Worker,
       # Start the Presence module
       YoutubeVideoChatAppWeb.Presence,
       # Start the Registry for room servers (faster than :global)

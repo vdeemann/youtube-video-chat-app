@@ -1,0 +1,6 @@
+fastapi>=0.111
+uvicorn>=0.30
+yt-dlp>=2025.6.9
+essentia==2.1b6.dev1110
+numpy<2
+requests>=2.31

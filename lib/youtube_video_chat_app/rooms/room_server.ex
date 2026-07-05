@@ -24,6 +24,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   """
   use GenServer
   alias Phoenix.PubSub
+  alias YoutubeVideoChatApp.AudioAnalysis
   require Logger
 
   @idle_timeout :timer.minutes(30)
@@ -118,6 +119,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   @impl true
   def handle_call({:add_to_queue, media_data, user}, _from, st) do
     media = build_media(media_data, user)
+    AudioAnalysis.request_for_media(media)
     st = st
     |> enqueue_tracks([media])
     |> maybe_start_playing()
@@ -128,6 +130,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   @impl true
   def handle_call({:add_multiple_to_queue, items, user}, _from, st) do
     medias = Enum.map(items, &build_media(&1, user))
+    Enum.each(medias, &AudioAnalysis.request_for_media/1)
     st = st
     |> enqueue_tracks(medias)
     |> maybe_start_playing()
@@ -244,6 +247,9 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     st = cancel_timer(st)
     case :queue.out(st.queue) do
       {{:value, next}, rest} ->
+        # Re-request in case analysis was missed at enqueue time (server
+        # restart, cache cleared).  Dedupe makes this free when cached.
+        AudioAnalysis.request_for_media(next, priority: :urgent)
         st = %{st |
           current_track: next,
           started_at: now_ms(),
@@ -266,6 +272,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   defp maybe_start_playing(%{current_track: nil} = st) do
     case :queue.out(st.queue) do
       {{:value, next}, rest} ->
+        AudioAnalysis.request_for_media(next, priority: :urgent)
         %{st |
           current_track: next,
           started_at: now_ms(),

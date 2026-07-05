@@ -19,6 +19,12 @@ else
     pool_size: 10
 end
 
+# Essentia analyzer sidecar.  `docker compose up analyzer` publishes it on
+# localhost:8000; inside the compose network the web container reaches it
+# via ANALYZER_URL=http://analyzer:8000.
+config :youtube_video_chat_app, :audio_analyzer,
+  url: System.get_env("ANALYZER_URL", "http://localhost:8000")
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 config :youtube_video_chat_app, YoutubeVideoChatAppWeb.Endpoint,

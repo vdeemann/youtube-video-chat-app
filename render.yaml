@@ -40,3 +40,24 @@ services:
         value: 5
       - key: PORT
         value: 10000
+      # Full URL of the analyzer service below, e.g.
+      # https://youtube-video-chat-analyzer.onrender.com
+      # Set in the dashboard after the analyzer deploys (Render's fromService
+      # can only inject the bare hostname, not a URL with a scheme).
+      - key: ANALYZER_URL
+        sync: false
+
+  # Essentia audio analysis sidecar (key/BPM/chord detection).
+  # Free-tier note: this service sleeps when idle; the first analysis after a
+  # sleep will be slow, and long tracks may exceed the 512MB memory limit —
+  # those analyses fail gracefully and the app works fine without them.
+  # Chord quality note: the ChordMini deep-learning chord engine (see
+  # docker-compose.yml) needs ~2GB RAM and is NOT deployed here — without a
+  # CHORDMINI_URL env var this service falls back to Essentia chords.
+  - type: web
+    name: youtube-video-chat-analyzer
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./analyzer/Dockerfile
+    dockerContext: ./analyzer

@@ -602,8 +602,29 @@
       </div>
     </div>
     
+    <!-- Track Analysis Pill: detected key + BPM, with live chord readout -->
+    <%= if @current_media && @current_analysis do %>
+      <div class="absolute bottom-12 right-4 pointer-events-auto z-40">
+        <div class="flex items-center gap-3 px-4 py-2 bg-black/60 backdrop-blur-md rounded-full border border-white/10 shadow-lg">
+          <span class="text-purple-300 text-sm font-semibold whitespace-nowrap">
+            ♪ <%= @current_analysis.key %> <%= @current_analysis.scale %>
+          </span>
+          <%= if @current_analysis.bpm do %>
+            <span class="text-gray-400 text-sm whitespace-nowrap"><%= @current_analysis.bpm %> BPM</span>
+          <% end %>
+          <%= if @current_analysis.chords != [] do %>
+            <!-- phx-update="ignore": the chord text is driven by JS every 500ms -->
+            <span class="flex items-center gap-2 pl-3 border-l border-white/20" id="chord-display" phx-update="ignore">
+              <span class="text-gray-500 text-xs uppercase tracking-wider">Chord</span>
+              <span id="current-chord" class="text-white font-bold text-base min-w-[3rem] text-center">—</span>
+            </span>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
     <!-- Side Panel: Queue (Right Side) -->
-    <div 
+    <div
       :if={@show_queue}
       class="absolute top-20 right-4 w-96 pointer-events-auto flex flex-col z-50"
       style="bottom: 120px;"
@@ -731,6 +752,11 @@
                     <p class="text-gray-400 text-xs">
                       Added by <%= Map.get(@current_media, :added_by_username) || Map.get(@current_media, "added_by_username") || "Unknown" %>
                     </p>
+                    <%= if @current_analysis do %>
+                      <p class="text-purple-300 text-xs mt-0.5">
+                        ♪ <%= @current_analysis.key %> <%= @current_analysis.scale %><%= if @current_analysis.bpm do %> • <%= @current_analysis.bpm %> BPM<% end %>
+                      </p>
+                    <% end %>
                   </div>
                   <!-- Action Buttons -->
                   <div class="flex items-center gap-1">
@@ -855,6 +881,12 @@
                     <div class="flex-1 min-w-0">
                       <p class="text-white text-xs truncate"><%= media_title %></p>
                       <p class="text-gray-500 text-xs">by <%= added_by %></p>
+                      <% analysis = Map.get(@queue_analyses, {media_type, Map.get(media, :media_id) || Map.get(media, "media_id")}) %>
+                      <%= if analysis do %>
+                        <p class="text-purple-300/80 text-xs">
+                          ♪ <%= analysis.key %> <%= analysis.scale %><%= if analysis.bpm do %> • <%= analysis.bpm %><% end %>
+                        </p>
+                      <% end %>
                     </div>
                     
                     <!-- Actions -->
