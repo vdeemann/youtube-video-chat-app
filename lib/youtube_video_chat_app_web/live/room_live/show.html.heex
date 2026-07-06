@@ -602,36 +602,6 @@
       </div>
     </div>
     
-    <!-- Track Analysis Pill: analysis in progress -->
-    <%= if @current_media && !@current_analysis && @analysis_pending do %>
-      <div class="absolute bottom-3 right-4 pointer-events-auto z-40">
-        <div class="flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-md rounded-full border border-white/5">
-          <span class="text-gray-400 text-xs animate-pulse whitespace-nowrap">♪ analyzing…</span>
-        </div>
-      </div>
-    <% end %>
-
-    <!-- Track Analysis Pill: detected key + BPM, with live chord readout -->
-    <%= if @current_media && @current_analysis do %>
-      <div class="absolute bottom-3 right-4 pointer-events-auto z-40">
-        <div class="flex items-center gap-3 px-4 py-2 bg-black/60 backdrop-blur-md rounded-full border border-white/10 shadow-lg">
-          <span class="text-purple-300 text-sm font-semibold whitespace-nowrap">
-            ♪ <%= @current_analysis.key %> <%= @current_analysis.scale %>
-          </span>
-          <%= if @current_analysis.bpm do %>
-            <span class="text-gray-400 text-sm whitespace-nowrap"><%= @current_analysis.bpm %> BPM</span>
-          <% end %>
-          <%= if @current_analysis.chords != [] do %>
-            <!-- phx-update="ignore": the chord text is driven by JS every 500ms -->
-            <span class="flex items-center gap-2 pl-3 border-l border-white/20" id="chord-display" phx-update="ignore">
-              <span class="text-gray-500 text-xs uppercase tracking-wider">Chord</span>
-              <span id="current-chord" class="text-white font-bold text-base min-w-[3rem] text-center">—</span>
-            </span>
-          <% end %>
-        </div>
-      </div>
-    <% end %>
-
     <!-- Side Panel: Queue (Right Side) -->
     <div
       :if={@show_queue}
@@ -1032,11 +1002,11 @@
                 autocomplete="off"
                 maxlength="100"
               />
-              <button 
+              <button
                 type="submit"
-                class="p-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white rounded-full transition"
+                class="p-1.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white rounded-full transition"
               >
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
               </button>
@@ -1134,8 +1104,30 @@
               </button>
             </div>
           </div>
+
+          <!-- Track analysis readout: key/BPM + live chord, inline with the reactions -->
+          <%= if @current_media && @current_analysis do %>
+            <div class="flex items-center gap-3 shrink-0 pl-1">
+              <span class="text-purple-300 text-sm font-semibold whitespace-nowrap">
+                ♪ <%= @current_analysis.key %> <%= @current_analysis.scale %>
+              </span>
+              <%= if @current_analysis.bpm do %>
+                <span class="text-gray-300 text-sm whitespace-nowrap"><%= @current_analysis.bpm %> BPM</span>
+              <% end %>
+              <%= if @current_analysis.chords != [] do %>
+                <!-- phx-update="ignore": the chord text is driven by JS every 500ms -->
+                <span class="flex items-center gap-2" id="chord-display" phx-update="ignore">
+                  <span class="text-gray-500 text-xs uppercase tracking-wider">Chord</span>
+                  <span id="current-chord" class="text-white font-bold text-base min-w-[3rem] text-center">—</span>
+                </span>
+              <% end %>
+            </div>
+          <% end %>
+          <%= if @current_media && !@current_analysis && @analysis_pending do %>
+            <span class="text-gray-400 text-xs animate-pulse whitespace-nowrap shrink-0 pl-1">♪ analyzing…</span>
+          <% end %>
         </div>
-        
+
         <!-- User Info -->
         <div class="text-center mt-2">
           <span class="text-xs text-gray-500">
