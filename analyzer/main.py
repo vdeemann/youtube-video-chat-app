@@ -53,9 +53,51 @@ class AnalyzeRequest(BaseModel):
     url: str
 
 
+class PlaylistRequest(BaseModel):
+    url: str
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/playlist")
+def playlist(req: PlaylistRequest):
+    """Flat playlist listing (no downloads): all entry ids/titles in one call.
+    The Elixir importer prefers this over scraping YouTube's ever-changing
+    markup.  Fast metadata-only work — no need for the analysis lock."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "playlistend": 5000,
+    }
+    if clients := os.environ.get("YTDLP_PLAYER_CLIENTS"):
+        opts["extractor_args"] = {"youtube": {"player_client": clients.split(",")}}
+    cookies = os.environ.get("YTDLP_COOKIES_FILE")
+    if cookies and os.path.exists(cookies):
+        opts["cookiefile"] = cookies
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(req.url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        raise HTTPException(status_code=422, detail=f"playlist fetch failed: {e}") from e
+
+    entries = [
+        {
+            "id": entry.get("id"),
+            "title": entry.get("title"),
+            "url": entry.get("url"),
+            "duration": entry.get("duration"),
+            "uploader": entry.get("uploader") or entry.get("channel"),
+        }
+        for entry in (info.get("entries") or [])
+        if entry
+    ]
+    return {"title": info.get("title"), "entries": entries}
 
 
 @app.post("/analyze")

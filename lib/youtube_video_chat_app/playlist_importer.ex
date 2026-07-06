@@ -76,6 +76,68 @@ defmodule YoutubeVideoChatApp.PlaylistImporter do
 
         playlist_url = "https://www.youtube.com/playlist?list=#{playlist_id}"
 
+        case import_via_analyzer(playlist_url) do
+          {:ok, result} ->
+            Logger.info("[PlaylistImporter] Imported #{length(result.tracks)} YouTube tracks via analyzer")
+            {:ok, result}
+
+          :unavailable ->
+            import_youtube_playlist_via_scrape(playlist_id)
+        end
+    end
+  end
+
+  # The analyzer sidecar's yt-dlp handles playlist listing far more robustly
+  # than scraping YouTube's ever-changing page markup (and paginates past the
+  # ~100 items embedded in the page).  Falls back to scraping when the
+  # analyzer is not configured or errors.
+  defp import_via_analyzer(playlist_url) do
+    analyzer_url = Application.get_env(:youtube_video_chat_app, :audio_analyzer, [])[:url]
+
+    if analyzer_url do
+      body = Jason.encode!(%{url: playlist_url})
+
+      request =
+        Finch.build(:post, analyzer_url <> "/playlist", [{"content-type", "application/json"}], body)
+
+      case Finch.request(request, @finch, receive_timeout: 120_000) do
+        {:ok, %{status: 200, body: resp}} ->
+          case Jason.decode(resp) do
+            {:ok, %{"entries" => entries} = data} when is_list(entries) and entries != [] ->
+              tracks =
+                entries
+                |> Enum.take(@max_tracks)
+                |> Enum.map(fn entry ->
+                  duration = entry["duration"]
+
+                  case build_youtube_track(entry["id"], entry["title"] || "YouTube Video") do
+                    nil -> nil
+                    track when is_number(duration) -> %{track | duration: round(duration)}
+                    track -> track
+                  end
+                end)
+                |> Enum.filter(& &1)
+
+              {:ok, %{name: data["title"] || "YouTube Playlist", tracks: tracks}}
+
+            _ ->
+              :unavailable
+          end
+
+        _ ->
+          :unavailable
+      end
+    else
+      :unavailable
+    end
+  rescue
+    _ -> :unavailable
+  end
+
+  defp import_youtube_playlist_via_scrape(playlist_id) do
+
+        playlist_url = "https://www.youtube.com/playlist?list=#{playlist_id}"
+
         case http_get_browser(playlist_url) do
           {:ok, body} ->
             playlist_name = extract_playlist_title_from_page(body) || "YouTube Playlist"
@@ -90,7 +152,9 @@ defmodule YoutubeVideoChatApp.PlaylistImporter do
                 {first_page_tracks, continuation_token} = extract_yt_playlist_items(initial_data)
 
                 if Enum.empty?(first_page_tracks) do
-                  {:error, "No videos found in this playlist. It may be private or empty."}
+                  # ytInitialData parsed but no renderers found — the JSON
+                  # layout changed again; salvage video IDs from raw HTML.
+                  import_youtube_from_page_html(body, playlist_name)
                 else
                   # Fetch remaining pages via browse API
                   all_tracks = fetch_all_yt_pages(first_page_tracks, continuation_token, api_key, client_version)
@@ -108,7 +172,6 @@ defmodule YoutubeVideoChatApp.PlaylistImporter do
           {:error, reason} ->
             {:error, "Failed to fetch YouTube playlist: #{reason}"}
         end
-    end
   end
 
   defp extract_youtube_playlist_id(url) do
@@ -136,43 +199,41 @@ defmodule YoutubeVideoChatApp.PlaylistImporter do
     end
   end
 
+  # YouTube reshuffles its JSON layout regularly (a hardcoded path broke
+  # 2026-07), so instead of navigating a fixed structure, deep-walk the whole
+  # document and collect playlistVideoRenderer nodes + the continuation token
+  # wherever they live.  Works for both ytInitialData and browse responses.
   defp extract_yt_playlist_items(data) do
-    # Navigate the ytInitialData structure to find playlist video renderers
-    tabs = get_in(data, ["contents", "twoColumnBrowseResultsRenderer", "tabs"]) || []
-    tab = List.first(tabs) || %{}
-    contents = get_in(tab, ["tabRenderer", "content", "sectionListRenderer", "contents"]) || []
-    section = List.first(contents) || %{}
-    playlist_contents = get_in(section, ["itemSectionRenderer", "contents", Access.at(0), "playlistVideoListRenderer", "contents"]) || []
-
-    {tracks, continuation} = extract_tracks_and_continuation(playlist_contents)
-    {tracks, continuation}
+    {tracks, continuation} = walk_yt(data, {[], nil})
+    {Enum.reverse(tracks), continuation}
   end
 
-  defp extract_tracks_and_continuation(items) do
-    tracks =
-      items
-      |> Enum.filter(&Map.has_key?(&1, "playlistVideoRenderer"))
-      |> Enum.map(fn %{"playlistVideoRenderer" => renderer} ->
-        video_id = renderer["videoId"]
-        title = get_in(renderer, ["title", "runs", Access.at(0), "text"]) || "YouTube Video"
-        build_youtube_track(video_id, title)
-      end)
-      |> Enum.filter(& &1)
+  defp walk_yt(node, acc) when is_map(node) do
+    {tracks, token} = acc
 
-    # Extract continuation token from the last item
-    continuation =
-      items
-      |> Enum.find_value(nil, fn item ->
-        case item do
-          %{"continuationItemRenderer" => cont_renderer} ->
-            # The token can be in different nested locations
-            find_continuation_token(cont_renderer)
-          _ -> nil
-        end
-      end)
+    acc =
+      cond do
+        renderer = node["playlistVideoRenderer"] ->
+          video_id = renderer["videoId"]
+          title = get_in(renderer, ["title", "runs", Access.at(0), "text"]) || "YouTube Video"
 
-    {tracks, continuation}
+          case build_youtube_track(video_id, title) do
+            nil -> acc
+            track -> {[track | tracks], token}
+          end
+
+        cont_renderer = node["continuationItemRenderer"] ->
+          {tracks, token || find_continuation_token(cont_renderer)}
+
+        true ->
+          acc
+      end
+
+    Enum.reduce(Map.values(node), acc, &walk_yt/2)
   end
+
+  defp walk_yt(node, acc) when is_list(node), do: Enum.reduce(node, acc, &walk_yt/2)
+  defp walk_yt(_node, acc), do: acc
 
   defp find_continuation_token(cont_renderer) do
     # Try direct path first
@@ -216,9 +277,8 @@ defmodule YoutubeVideoChatApp.PlaylistImporter do
       {:ok, resp_body} ->
         case Jason.decode(resp_body) do
           {:ok, resp_data} ->
-            # Extract video items from continuation response
-            continuation_items = extract_yt_continuation_items(resp_data)
-            {new_tracks, next_token} = extract_tracks_and_continuation(continuation_items)
+            # Deep-walk the continuation response the same way as the page
+            {new_tracks, next_token} = extract_yt_playlist_items(resp_data)
 
             if Enum.empty?(new_tracks) do
               tracks_so_far
@@ -231,15 +291,6 @@ defmodule YoutubeVideoChatApp.PlaylistImporter do
 
       {:error, _} -> tracks_so_far
     end
-  end
-
-  defp extract_yt_continuation_items(resp_data) do
-    # Browse API responses nest items under onResponseReceivedActions
-    actions = resp_data["onResponseReceivedActions"] || []
-
-    Enum.flat_map(actions, fn action ->
-      get_in(action, ["appendContinuationItemsAction", "continuationItems"]) || []
-    end)
   end
 
   defp build_youtube_track(nil, _title), do: nil
