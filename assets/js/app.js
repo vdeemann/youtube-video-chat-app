@@ -791,6 +791,13 @@ const ChatScroll = {
     } else {
       this.scrollToBottom();
     }
+    // Cached images can finish before any 'load' listener attaches, so the
+    // heights they add would leave a bottom-pinned view stranded above the
+    // newest messages.  Re-pin after layout settles.
+    if (window._chatWasAtBottom !== false) {
+      requestAnimationFrame(() => this.scrollToBottom());
+      setTimeout(() => { if (!this.userScrolled) this.scrollToBottom(); }, 200);
+    }
     this.lastCount = this.msgCount();
     this.observer = new MutationObserver(() => {
       const c = this.msgCount();
@@ -830,8 +837,12 @@ const ChatScroll = {
     this.lastCount = c;
   },
   destroyed() {
-    window._chatScrollPosition = this.el.scrollTop;
-    window._chatWasAtBottom = this.el.scrollHeight - this.el.scrollTop <= this.el.clientHeight + 50;
+    // A detached element reads scrollTop/scrollHeight as 0 — don't clobber
+    // the last good position saved by the scroll listener with zeros.
+    if (this.el.scrollHeight > 0) {
+      window._chatScrollPosition = this.el.scrollTop;
+      window._chatWasAtBottom = this.el.scrollHeight - this.el.scrollTop <= this.el.clientHeight + 50;
+    }
     this.observer?.disconnect();
   },
   msgCount() { return this.el.querySelector('#messages-container')?.children.length || 0; },

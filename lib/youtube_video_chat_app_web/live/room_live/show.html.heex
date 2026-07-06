@@ -602,9 +602,12 @@
       </div>
     </div>
     
-    <!-- Side Panel: Queue (Right Side) -->
+    <!-- Side Panel: Queue (Right Side).  The id keeps LiveView's DOM diff
+         from mis-pairing this conditional panel with the chat section below,
+         which used to recreate the chat DOM (losing scroll position). -->
     <div
       :if={@show_queue}
+      id="queue-panel"
       class="absolute top-20 right-4 w-96 pointer-events-auto flex flex-col z-50"
       style="bottom: 120px;"
     >
@@ -944,7 +947,7 @@
     </div>
     
     <!-- Bottom Section: Chat History & Input -->
-    <div class="absolute bottom-0 left-0 right-0 pointer-events-auto">
+    <div id="bottom-bar" class="absolute bottom-0 left-0 right-0 pointer-events-auto">
       <!-- Scrollable Chat History -->
       <div 
         :if={@show_chat}
