@@ -604,7 +604,7 @@
     
     <!-- Track Analysis Pill: analysis in progress -->
     <%= if @current_media && !@current_analysis && @analysis_pending do %>
-      <div class="absolute bottom-12 right-4 pointer-events-auto z-40">
+      <div class="absolute bottom-3 right-4 pointer-events-auto z-40">
         <div class="flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-md rounded-full border border-white/5">
           <span class="text-gray-400 text-xs animate-pulse whitespace-nowrap">♪ analyzing…</span>
         </div>
@@ -613,7 +613,7 @@
 
     <!-- Track Analysis Pill: detected key + BPM, with live chord readout -->
     <%= if @current_media && @current_analysis do %>
-      <div class="absolute bottom-12 right-4 pointer-events-auto z-40">
+      <div class="absolute bottom-3 right-4 pointer-events-auto z-40">
         <div class="flex items-center gap-3 px-4 py-2 bg-black/60 backdrop-blur-md rounded-full border border-white/10 shadow-lg">
           <span class="text-purple-300 text-sm font-semibold whitespace-nowrap">
             ♪ <%= @current_analysis.key %> <%= @current_analysis.scale %>
