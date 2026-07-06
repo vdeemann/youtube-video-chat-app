@@ -61,6 +61,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     # Audio analysis (key/BPM/chords) state
     |> assign(:current_analysis, fetch_analysis(room_state.current_track))
     |> assign(:queue_analyses, AudioAnalysis.get_payloads(analysis_keys(room_state.queue)))
+    |> then(fn s -> assign(s, :analysis_pending, analysis_pending?(room_state.current_track, s.assigns.current_analysis)) end)
     # UI state
     |> assign(:show_chat, true)
     |> assign(:show_queue, false)
@@ -138,6 +139,24 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   defp fetch_analysis(media) do
     {type, id} = media_key(media)
     AudioAnalysis.payload(AudioAnalysis.get(type, id))
+  end
+
+  # "Analysis is on its way" — the analyzer is configured and the current
+  # track has no result yet (no row = request just fired; pending = queued
+  # or in flight).  Failed analyses show nothing rather than a stuck spinner.
+  defp analysis_pending?(nil, _payload), do: false
+  defp analysis_pending?(_media, %{}), do: false
+  defp analysis_pending?(media, nil) do
+    if AudioAnalysis.enabled?() do
+      {type, id} = media_key(media)
+      case AudioAnalysis.get(type, id) do
+        nil -> true
+        %{status: "pending"} -> true
+        _ -> false
+      end
+    else
+      false
+    end
   end
 
   # Request analysis for a playing track that has none — urgent so it skips
@@ -823,6 +842,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       socket
       |> assign(:current_media, new_track)
       |> assign(:current_analysis, analysis)
+      |> assign(:analysis_pending, analysis_pending?(new_track, analysis))
     else
       socket
     end
@@ -873,6 +893,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       if media_key(socket.assigns.current_media) == key do
         socket
         |> assign(:current_analysis, payload)
+        |> assign(:analysis_pending, false)
         |> push_track_analysis(payload)
       else
         socket

@@ -20,6 +20,11 @@ defmodule YoutubeVideoChatApp.AudioAnalysis do
 
   def subscribe, do: PubSub.subscribe(YoutubeVideoChatApp.PubSub, @topic)
 
+  @doc "Whether an analyzer sidecar is configured at all."
+  def enabled? do
+    Application.get_env(:youtube_video_chat_app, :audio_analyzer, [])[:url] != nil
+  end
+
   def get(media_type, media_id) when is_binary(media_type) and is_binary(media_id) do
     Repo.get_by(TrackAnalysis, media_type: media_type, media_id: media_id)
   end
