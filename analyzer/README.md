@@ -42,6 +42,25 @@ Key and BPM always come from Essentia — they've proven accurate and avoid a
 second model pass.  MIREX-style labels from ChordMini (`C#:min7`) are mapped
 to compact display form (`C#m7`); bass inversions are dropped.
 
+## YouTube bot-detection on cloud hosts
+
+YouTube intermittently challenges downloads from datacenter IPs
+("Sign in to confirm you're not a bot"), so YouTube analysis on cloud
+deployments is unreliable while SoundCloud is unaffected.  Failed tracks
+retry hourly, and successes are cached forever, so coverage accumulates.
+Two env knobs for experimentation:
+
+- `YTDLP_PLAYER_CLIENTS` — comma-separated yt-dlp player clients to try
+  (e.g. `tv,web`).  Sometimes bypasses the challenge; costs nothing to try.
+- `YTDLP_COOKIES_FILE` — path to an exported YouTube cookies file
+  (Netscape format).  Reliable, but use a throwaway Google account: accounts
+  used for automated downloads risk being flagged.
+
+Since analyses are keyed only by `{media_type, media_id}`, a local
+`track_analyses` table can also be dumped and loaded into the production
+database to pre-seed results computed on a residential IP (where YouTube
+doesn't challenge).
+
 ## Behavior notes
 
 - Requests are serialized with a lock — analysis is CPU-bound.

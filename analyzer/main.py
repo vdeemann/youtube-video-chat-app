@@ -76,6 +76,19 @@ def _download_audio(url: str, tmpdir: str) -> str:
         # YouTube intermittently 403s media downloads; retrying usually clears
         # it (the Elixir side also re-requests failed analyses after an hour).
         "retries": 3,
+    }
+
+    # Datacenter IPs (cloud deployments) get intermittent "confirm you're not
+    # a bot" challenges from YouTube.  These knobs let a deployment try
+    # alternative player clients or authenticate with exported cookies —
+    # see analyzer/README.md.
+    if clients := os.environ.get("YTDLP_PLAYER_CLIENTS"):
+        opts["extractor_args"] = {"youtube": {"player_client": clients.split(",")}}
+    cookies = os.environ.get("YTDLP_COOKIES_FILE")
+    if cookies and os.path.exists(cookies):
+        opts["cookiefile"] = cookies
+
+    opts |= {
         # Essentia's bundled decoder is old and can't read Opus/WebM (YouTube's
         # usual bestaudio), so transcode to mono WAV with the system ffmpeg.
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
