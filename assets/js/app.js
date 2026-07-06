@@ -57,7 +57,10 @@ function markUserInteracted() {
   } catch (_) {}
   try {
     if (window.scWidget) {
-      window.scWidget.setVolume(window.playerState.volume);
+      // Don't unmute mid-settle — settle completion restores the volume.
+      if (window.playerState._settled) {
+        window.scWidget.setVolume(window.playerState.volume);
+      }
       // Nudge SoundCloud to re-engage audio by pausing and immediately playing
       window.scWidget.play();
     }
@@ -228,45 +231,71 @@ loadYouTubeAPI();
 // ===========================================
 // PLAYER LOAD COMPENSATION
 // ===========================================
-// Starting a video mid-track takes a moment (loadVideoById -> first
-// playing frame).  If we load at the position computed "now", playback is
-// already behind when it begins.  We learn this machine's typical load
-// latency and load where the track WILL be, then fine-correct only if we
-// missed.
-function getBootCompensation() {
-  const v = parseFloat(localStorage.getItem('ytLoadComp') || '');
-  return Number.isFinite(v) ? Math.min(Math.max(v, 0.3), 3) : 0.8;
+// Starting playback mid-track takes a moment (load/seek -> first playing
+// frame).  If we target the position computed "now", playback is already
+// behind when it begins.  We learn each player's typical latency on this
+// machine and target where the track WILL be, then fine-correct only if
+// we missed.
+function getLoadCompensation(key, fallback) {
+  const v = parseFloat(localStorage.getItem(key) || '');
+  return Number.isFinite(v) ? Math.min(Math.max(v, 0.2), 3) : fallback;
 }
 
-function recordBootLatency(seconds) {
+function recordLoadLatency(key, fallback, seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 15) return;
-  const blended = getBootCompensation() * 0.7 + seconds * 0.3;
-  localStorage.setItem('ytLoadComp', blended.toFixed(2));
+  const blended = getLoadCompensation(key, fallback) * 0.7 + seconds * 0.3;
+  localStorage.setItem(key, blended.toFixed(2));
 }
+
+const YT_COMP = ['ytLoadComp', 0.8];
+const SC_COMP = ['scLoadComp', 0.6];
 
 // ===========================================
 // SETTLE-THEN-UNMUTE
 // ===========================================
-// The player always boots muted so the settling phase (boot at the
-// predicted position, possible correction seek) is never audible.
-// unmuteWhenSettled() runs once playback timing is confirmed; a failsafe
-// timeout guarantees audio even if a player event goes missing.
-function unmuteWhenSettled() {
+// Players always boot muted so the settling phase (load at the predicted
+// position, possible correction seek) is never audible.  markSettled()
+// runs once playback timing is confirmed: it restores audio (when the
+// browser allows it) and sends the host's first progress report — reports
+// before this point could recalibrate the room clock to a pre-seek
+// position and rewind the room for everyone.  A failsafe timeout
+// guarantees audio even if a player event goes missing.
+function markSettled() {
   const ps = window.playerState;
-  if (ps._unmuted) return;
-  if (ps._startMuted) return; // browser policy: stays muted until user gesture
-  try {
-    const yt = ps.ytPlayer;
-    if (yt) {
-      yt.setVolume(ps.volume);
-      yt.unMute();
-      ps._unmuted = true;
-    }
-  } catch (_) {}
+  if (ps._settled) return;
+  ps._settled = true;
   if (ps._unmuteFailsafe) {
     clearTimeout(ps._unmuteFailsafe);
     ps._unmuteFailsafe = null;
   }
+
+  const canUnmute = !ps._startMuted || window._userHasInteracted;
+
+  try {
+    if (ps.ytPlayer) {
+      if (canUnmute) {
+        ps.ytPlayer.setVolume(ps.volume);
+        ps.ytPlayer.unMute();
+      }
+      if (ps.isHost) {
+        const cur = ps.ytPlayer.getCurrentTime?.();
+        const dur = ps.ytPlayer.getDuration?.();
+        if (cur > 0) pushVideoProgress(cur, dur || 0);
+      }
+    }
+  } catch (_) {}
+
+  try {
+    if (window.scWidget) {
+      window.scWidget.setVolume(canUnmute ? ps.volume : 0);
+      if (ps.isHost) {
+        window.scWidget.getPosition((pos) => {
+          const cur = pos / 1000;
+          if (cur > 0) window.scWidget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
+        });
+      }
+    }
+  } catch (_) {}
 }
 
 // ===========================================
@@ -404,11 +433,14 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
     initYouTubePlayer(media.media_id, seekPosition);
   } else if (media.type === "soundcloud") {
     const uid = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Disable the widget's own autoplay: it would start from 0:00 before we
+    // can position it.  We call play() ourselves once the widget is ready.
+    const embedSrc = media.embed_url.replace('auto_play=true', 'auto_play=false');
     container.innerHTML = `
       <div class="absolute inset-0 bg-gradient-to-br from-orange-900 via-red-900 to-purple-900 flex items-center justify-center" id="player-host">
         <div class="w-full h-full flex flex-col items-center justify-center px-6" style="padding-top: 70px; padding-bottom: 100px;">
           <div class="w-full flex items-center justify-center" style="max-width: 850px; max-height: 500px; height: 100%;">
-            <iframe id="active-player" name="sc-player-${uid}" src="${media.embed_url}&_t=${uid}"
+            <iframe id="active-player" name="sc-player-${uid}" src="${embedSrc}&_t=${uid}"
               frameborder="0" allow="autoplay; encrypted-media"
               class="w-full h-full rounded-xl shadow-2xl" loading="eager"></iframe>
           </div>
@@ -449,15 +481,15 @@ function initYouTubePlayer(videoId, startSeconds) {
       onReady: (e) => {
         window.playerState.playerReady = true;
         // Always boot muted — the settling phase shouldn't be audible.
-        // unmuteWhenSettled() restores audio once timing is confirmed.
+        // markSettled() restores audio once timing is confirmed.
         e.target.mute();
         e.target.setVolume(window.playerState.volume);
-        window.playerState._unmuteFailsafe = setTimeout(unmuteWhenSettled, 4000);
+        window.playerState._unmuteFailsafe = setTimeout(markSettled, 4000);
         window.playerState._loadStartedAt = Date.now();
         if (midJoin) {
           // Fresh live position plus this machine's learned load latency —
           // the stream starts where the track will be when frames appear.
-          const target = getLivePosition() + getBootCompensation();
+          const target = getLivePosition() + getLoadCompensation(...YT_COMP);
           e.target.loadVideoById({ videoId: videoId, startSeconds: Math.max(0, target) });
         } else {
           e.target.playVideo();
@@ -481,7 +513,7 @@ function initYouTubePlayer(videoId, startSeconds) {
         if (e.data === 1) {
           if (!window.playerState._playbackTuned) {
             window.playerState._playbackTuned = true;
-            recordBootLatency((Date.now() - (window.playerState._loadStartedAt || window.playerState._createdAt || Date.now())) / 1000);
+            recordLoadLatency(...YT_COMP, (Date.now() - (window.playerState._loadStartedAt || window.playerState._createdAt || Date.now())) / 1000);
             let corrected = false;
             try {
               const cur = e.target.getCurrentTime();
@@ -491,9 +523,9 @@ function initYouTubePlayer(videoId, startSeconds) {
                 corrected = true;
               }
             } catch (_) {}
-            if (!corrected) unmuteWhenSettled();
+            if (!corrected) markSettled();
           } else {
-            unmuteWhenSettled();
+            markSettled();
           }
         }
         // Track ended
@@ -533,38 +565,29 @@ function initSoundCloud(startPosition) {
 
   widget.bind(window.SC.Widget.Events.READY, () => {
     window.playerState.playerReady = true;
-    if (window.playerState._startMuted) {
-      widget.setVolume(0);
-    } else {
-      widget.setVolume(window.playerState.volume);
-    }
-    // Recompute live position at the moment the widget is actually ready,
-    // since time has passed since syncPlayer computed the initial startPosition.
-    const livePos = getLivePosition();
-    if (livePos > 1) {
-      widget.seekTo(livePos * 1000);
-    } else if (startPosition > 0) {
-      widget.seekTo(startPosition * 1000);
-    }
+    // Autoplay is off in the embed URL and volume starts at 0 — nothing is
+    // audible until the position is confirmed (PLAY_PROGRESS below).
+    widget.setVolume(0);
+    window.playerState._loadStartedAt = Date.now();
+    window.playerState._unmuteFailsafe = setTimeout(markSettled, 5000);
     widget.play();
-    // Host sends immediate progress report so the server recalibrates started_at right away
-    if (window.playerState.isHost) {
-      setTimeout(() => {
-        try {
-          widget.getPosition((pos) => {
-            const cur = pos / 1000;
-            if (cur > 0) {
-              widget.getDuration((d) => pushVideoProgress(cur, (d || 0) / 1000));
-            }
-          });
-        } catch (_) {}
-      }, 800);
-    }
   });
 
   widget.bind(window.SC.Widget.Events.PLAY, () => {
-    // If user interacted while the widget was loading, apply volume now
-    if (window._userHasInteracted) {
+    // Seek only AFTER playback has started — seekTo before playing is
+    // unreliably honored by the widget (that was the rare
+    // "restarts from the beginning" bug).
+    if (!window.playerState._settled && !window.playerState._scSeekIssued) {
+      window.playerState._scSeekIssued = true;
+      const live = getLivePosition();
+      if (live > 1) {
+        window.playerState._scSeekAt = Date.now();
+        widget.seekTo((live + getLoadCompensation(...SC_COMP)) * 1000);
+      } else {
+        markSettled(); // track is at/near its start — nothing to correct
+      }
+    } else if (window.playerState._settled && window._userHasInteracted) {
+      // Re-apply volume when playback resumes after a user gesture
       try { widget.setVolume(window.playerState.volume); } catch (_) {}
     }
   });
@@ -576,10 +599,27 @@ function initSoundCloud(startPosition) {
     }
   });
 
-  // Throttle PLAY_PROGRESS — SoundCloud fires this many times per second.
-  // Only check every 2 seconds to reduce CPU load on older hardware.
   let _lastProgressCheck = 0;
   widget.bind(window.SC.Widget.Events.PLAY_PROGRESS, (data) => {
+    // While settling: confirm the seek landed near the live position, and
+    // reissue it if the widget swallowed it.
+    if (!window.playerState._settled) {
+      const posS = (data.currentPosition || 0) / 1000;
+      const live = getLivePosition();
+      if (!window.playerState.startedAt || Math.abs(posS - live) <= 2.5) {
+        recordLoadLatency(...SC_COMP,
+          (Date.now() - (window.playerState._scSeekAt || window.playerState._loadStartedAt || Date.now())) / 1000);
+        markSettled();
+      } else if (window.playerState._scSeekIssued && Date.now() - (window.playerState._scSeekAt || 0) > 1500) {
+        window.playerState._scSeekAt = Date.now();
+        widget.seekTo((live + getLoadCompensation(...SC_COMP)) * 1000);
+      }
+      return;
+    }
+
+    // Settled: throttled end-of-track detection — SoundCloud fires
+    // PLAY_PROGRESS many times per second, so only check every 2s to
+    // reduce CPU load on older hardware.
     const now = Date.now();
     if (now - _lastProgressCheck < 2000) return;
     _lastProgressCheck = now;
@@ -658,6 +698,10 @@ function pushVideoEnded() {
 }
 
 function pushVideoProgress(currentTime, duration) {
+  // Never report position before playback has settled — a pre-seek report
+  // would recalibrate the room clock to the wrong position and rewind the
+  // track for everyone in the room (persisted, too).
+  if (!window.playerState._settled) return;
   if (window._roomHookPushEvent) {
     window._roomHookPushEvent("video_progress", { current_time: currentTime, duration });
     return;
