@@ -226,22 +226,22 @@ loadYouTubeAPI();
 })();
 
 // ===========================================
-// PLAYER BOOT COMPENSATION
+// PLAYER LOAD COMPENSATION
 // ===========================================
-// Creating a YouTube player takes 1-3s (iframe boot + buffering).  If we
-// start it at the position computed "now", it's already behind when audio
-// begins.  We learn this machine's typical boot latency and start the
-// player where the track WILL be, then fine-correct only if we missed —
-// one load cycle instead of the old load-then-seek-then-rebuffer.
+// Starting a video mid-track takes a moment (loadVideoById -> first
+// playing frame).  If we load at the position computed "now", playback is
+// already behind when it begins.  We learn this machine's typical load
+// latency and load where the track WILL be, then fine-correct only if we
+// missed.
 function getBootCompensation() {
-  const v = parseFloat(localStorage.getItem('ytBootComp') || '');
-  return Number.isFinite(v) ? Math.min(Math.max(v, 0.5), 4) : 1.5;
+  const v = parseFloat(localStorage.getItem('ytLoadComp') || '');
+  return Number.isFinite(v) ? Math.min(Math.max(v, 0.3), 3) : 0.8;
 }
 
 function recordBootLatency(seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 15) return;
   const blended = getBootCompensation() * 0.7 + seconds * 0.3;
-  localStorage.setItem('ytBootComp', blended.toFixed(2));
+  localStorage.setItem('ytLoadComp', blended.toFixed(2));
 }
 
 // ===========================================
@@ -433,15 +433,18 @@ function initYouTubePlayer(videoId, startSeconds) {
   const el = document.getElementById('youtube-player-container');
   if (!el) return;
 
-  // Start the player where the track will be once it actually begins
-  // playing, using this machine's learned boot latency.
-  const compensated = startSeconds > 1 ? startSeconds + getBootCompensation() : startSeconds;
+  // Mid-track joins boot a BARE player, then loadVideoById at the target
+  // position in onReady.  playerVars.start is unreliably honored, which
+  // showed up as "plays the beginning, then jumps"; loadVideoById fetches
+  // the stream directly at the offset, so 0:00 frames never exist.
+  // Tracks starting fresh keep the direct path — position 0 is correct.
+  const midJoin = startSeconds > 1;
 
   window.playerState.ytPlayer = new YT.Player('youtube-player-container', {
     width: el.clientWidth || 800,
     height: el.clientHeight || 450,
-    videoId,
-    playerVars: { autoplay: 1, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, start: Math.max(0, Math.floor(compensated)), enablejsapi: 1, origin: window.location.origin },
+    ...(midJoin ? {} : { videoId }),
+    playerVars: { autoplay: 1, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, enablejsapi: 1, origin: window.location.origin },
     events: {
       onReady: (e) => {
         window.playerState.playerReady = true;
@@ -450,9 +453,15 @@ function initYouTubePlayer(videoId, startSeconds) {
         e.target.mute();
         e.target.setVolume(window.playerState.volume);
         window.playerState._unmuteFailsafe = setTimeout(unmuteWhenSettled, 4000);
-        // No blanket re-seek here — the start position already compensates
-        // for boot latency; a second seek would force a visible rebuffer.
-        e.target.playVideo();
+        window.playerState._loadStartedAt = Date.now();
+        if (midJoin) {
+          // Fresh live position plus this machine's learned load latency —
+          // the stream starts where the track will be when frames appear.
+          const target = getLivePosition() + getBootCompensation();
+          e.target.loadVideoById({ videoId: videoId, startSeconds: Math.max(0, target) });
+        } else {
+          e.target.playVideo();
+        }
         // Host sends immediate progress report so the server recalibrates started_at right away
         if (window.playerState.isHost) {
           setTimeout(() => {
@@ -472,7 +481,7 @@ function initYouTubePlayer(videoId, startSeconds) {
         if (e.data === 1) {
           if (!window.playerState._playbackTuned) {
             window.playerState._playbackTuned = true;
-            recordBootLatency((Date.now() - (window.playerState._createdAt || Date.now())) / 1000);
+            recordBootLatency((Date.now() - (window.playerState._loadStartedAt || window.playerState._createdAt || Date.now())) / 1000);
             let corrected = false;
             try {
               const cur = e.target.getCurrentTime();
