@@ -206,11 +206,18 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
         
         <div class="text-center mb-12">
           <h1
-            class="text-6xl md:text-7xl text-amber-300 drop-shadow-[0_2px_18px_rgba(251,191,36,0.25)] select-none"
+            id="pta-title"
+            phx-hook="PassTheAuxToss"
+            phx-update="ignore"
+            class="text-6xl md:text-7xl text-amber-300 drop-shadow-[0_2px_18px_rgba(251,191,36,0.25)] select-none whitespace-nowrap"
             style="font-family: 'Fraunces', Georgia, serif;"
           >
-            <span class="italic font-medium">Pass the</span>
-            <span class="font-black tracking-tight">Aux</span>
+            <span id="pta-phrase" class="inline-block italic font-medium">Pass the</span>
+            <span
+              id="pta-aux"
+              class="inline-block font-black tracking-tight"
+              style="--fs:-120%;--fe:0%;-webkit-mask-image:linear-gradient(to right,rgba(0,0,0,0) var(--fs),rgba(0,0,0,1) var(--fe));mask-image:linear-gradient(to right,rgba(0,0,0,0) var(--fs),rgba(0,0,0,1) var(--fe));"
+            >Aux</span>
           </h1>
         </div>
         

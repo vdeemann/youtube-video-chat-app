@@ -897,7 +897,57 @@ const ClearOnSubmit = {
   }
 };
 
-let Hooks = { ChatScroll, RoomHook, ClearOnSubmit };
+// ===========================================
+// "PASS THE AUX" WORDMARK TOSS (home page)
+// ===========================================
+// GSAP toss: "Pass the" arcs in from the left, then "Aux" slides in with a
+// gradient reveal and jams into its socket.  Plays on a visitor's very
+// first landing, then again every 6th landing (1st, 7th, 13th, ...) so the
+// page stays fresh for regulars without being a carnival.  Degrades to the
+// static title when GSAP is unavailable or the user prefers reduced motion.
+const PassTheAuxToss = {
+  mounted() {
+    const phrase = this.el.querySelector("#pta-phrase");
+    const aux = this.el.querySelector("#pta-aux");
+    if (!phrase || !aux || !window.gsap) return;
+
+    let count = 1;
+    try {
+      count = (parseInt(localStorage.getItem("ptaLandings") || "0", 10) || 0) + 1;
+      localStorage.setItem("ptaLandings", String(count));
+    } catch (_) {}
+
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced || count % 6 !== 1) return; // static title this visit
+
+    const gsap = window.gsap;
+    const tl = gsap.timeline({ paused: true });
+
+    tl.set(phrase, { x: -180, y: -100, rotation: -7, autoAlpha: 1 }, 0)
+      .to(phrase, { x: 0, duration: 0.65, ease: "power1.inOut" }, 0)
+      .to(phrase, { y: 0, duration: 0.65, ease: "power2.in" }, 0)
+      .to(phrase, { rotation: 0, duration: 0.65, ease: "power1.out" }, 0)
+      .to(phrase, { y: 8, duration: 0.09, ease: "power1.in" }, 0.65)
+      .to(phrase, { y: 0, duration: 0.24, ease: "power2.out" }, 0.74);
+
+    const seat = 1.05;
+    tl.set(aux, { x: -230, autoAlpha: 1, "--fs": "55%", "--fe": "175%" }, seat)
+      .to(aux, { x: 0, duration: 0.5, ease: "power2.in" }, seat)
+      .to(aux, { "--fs": "-120%", "--fe": "0%", duration: 0.42, ease: "power1.out" }, seat + 0.05)
+      .to(aux, { scaleX: 0.84, duration: 0.07, transformOrigin: "right center" }, seat + 0.5)
+      .to(aux, { scaleX: 1, x: -4, duration: 0.1, ease: "power1.out" }, seat + 0.57)
+      .to(aux, { x: 0, duration: 0.35, ease: "elastic.out(1, 0.5)" }, seat + 0.67)
+      .to(phrase, { x: 6, duration: 0.08, ease: "power2.in" }, seat + 0.5)
+      .to(phrase, { x: 0, duration: 0.5, ease: "elastic.out(1, 0.45)" }, seat + 0.58);
+
+    // The static title has been showing since the server render (progressive
+    // enhancement) — hide both words at the last moment, then play.
+    gsap.set([phrase, aux], { autoAlpha: 0 });
+    tl.play();
+  }
+};
+
+let Hooks = { ChatScroll, RoomHook, ClearOnSubmit, PassTheAuxToss };
 
 let liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},

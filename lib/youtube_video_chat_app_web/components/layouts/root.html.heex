@@ -20,6 +20,10 @@
       <%= assigns[:page_title] || "YouTube Video Chat" %>
     </.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/app.css"} />
+    <!-- GSAP powers the home-page wordmark toss; pages degrade to a static
+         title if it fails to load.  Must come before app.js (defer order). -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js">
+    </script>
     <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
     </script>
   </head>
