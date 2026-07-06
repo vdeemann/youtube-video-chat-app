@@ -226,6 +226,25 @@ loadYouTubeAPI();
 })();
 
 // ===========================================
+// PLAYER BOOT COMPENSATION
+// ===========================================
+// Creating a YouTube player takes 1-3s (iframe boot + buffering).  If we
+// start it at the position computed "now", it's already behind when audio
+// begins.  We learn this machine's typical boot latency and start the
+// player where the track WILL be, then fine-correct only if we missed —
+// one load cycle instead of the old load-then-seek-then-rebuffer.
+function getBootCompensation() {
+  const v = parseFloat(localStorage.getItem('ytBootComp') || '');
+  return Number.isFinite(v) ? Math.min(Math.max(v, 0.5), 4) : 1.5;
+}
+
+function recordBootLatency(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 15) return;
+  const blended = getBootCompensation() * 0.7 + seconds * 0.3;
+  localStorage.setItem('ytBootComp', blended.toFixed(2));
+}
+
+// ===========================================
 // LIVE POSITION HELPER
 // ===========================================
 // Recompute the expected playback position right now, accounting for clock offset.
@@ -356,7 +375,7 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
           </div>
         </div>
       </div>`;
-    initYouTubePlayer(media.media_id, Math.floor(seekPosition));
+    initYouTubePlayer(media.media_id, seekPosition);
   } else if (media.type === "soundcloud") {
     const uid = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     container.innerHTML = `
@@ -388,11 +407,15 @@ function initYouTubePlayer(videoId, startSeconds) {
   const el = document.getElementById('youtube-player-container');
   if (!el) return;
 
+  // Start the player where the track will be once it actually begins
+  // playing, using this machine's learned boot latency.
+  const compensated = startSeconds > 1 ? startSeconds + getBootCompensation() : startSeconds;
+
   window.playerState.ytPlayer = new YT.Player('youtube-player-container', {
     width: el.clientWidth || 800,
     height: el.clientHeight || 450,
     videoId,
-    playerVars: { autoplay: 1, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, start: startSeconds, enablejsapi: 1, origin: window.location.origin },
+    playerVars: { autoplay: 1, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, start: Math.max(0, Math.floor(compensated)), enablejsapi: 1, origin: window.location.origin },
     events: {
       onReady: (e) => {
         window.playerState.playerReady = true;
@@ -402,12 +425,8 @@ function initYouTubePlayer(videoId, startSeconds) {
           e.target.unMute();
           e.target.setVolume(window.playerState.volume);
         }
-        // Recompute live position at the moment the player is actually ready,
-        // since time has passed since syncPlayer computed the initial seekPosition.
-        const livePos = getLivePosition();
-        if (livePos > 1) {
-          e.target.seekTo(livePos, true);
-        }
+        // No blanket re-seek here — the start position already compensates
+        // for boot latency; a second seek would force a visible rebuffer.
         e.target.playVideo();
         // Host sends immediate progress report so the server recalibrates started_at right away
         if (window.playerState.isHost) {
@@ -421,6 +440,19 @@ function initYouTubePlayer(videoId, startSeconds) {
         }
       },
       onStateChange: (e) => {
+        // First moment of actual playback: learn the real boot latency and
+        // fine-correct only if the compensated start still missed by >1.5s.
+        if (e.data === 1 && !window.playerState._playbackTuned) {
+          window.playerState._playbackTuned = true;
+          recordBootLatency((Date.now() - (window.playerState._createdAt || Date.now())) / 1000);
+          try {
+            const cur = e.target.getCurrentTime();
+            const live = getLivePosition();
+            if (window.playerState.startedAt && Math.abs(live - cur) > 1.5) {
+              e.target.seekTo(live, true);
+            }
+          } catch (_) {}
+        }
         // Track ended
         if (e.data === 0 && !window.playerState.endTriggered) {
           window.playerState.endTriggered = true;

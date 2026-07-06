@@ -4,6 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
+    <!-- Warm up player-domain connections before any player is created -->
+    <link rel="preconnect" href="https://www.youtube.com" />
+    <link rel="preconnect" href="https://i.ytimg.com" />
+    <link rel="preconnect" href="https://www.google.com" />
+    <link rel="preconnect" href="https://w.soundcloud.com" />
     <.live_title suffix=" · YouTube Video Chat">
       <%= assigns[:page_title] || "YouTube Video Chat" %>
     </.live_title>
