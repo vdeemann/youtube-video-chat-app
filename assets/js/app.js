@@ -245,6 +245,31 @@ function recordBootLatency(seconds) {
 }
 
 // ===========================================
+// SETTLE-THEN-UNMUTE
+// ===========================================
+// The player always boots muted so the settling phase (boot at the
+// predicted position, possible correction seek) is never audible.
+// unmuteWhenSettled() runs once playback timing is confirmed; a failsafe
+// timeout guarantees audio even if a player event goes missing.
+function unmuteWhenSettled() {
+  const ps = window.playerState;
+  if (ps._unmuted) return;
+  if (ps._startMuted) return; // browser policy: stays muted until user gesture
+  try {
+    const yt = ps.ytPlayer;
+    if (yt) {
+      yt.setVolume(ps.volume);
+      yt.unMute();
+      ps._unmuted = true;
+    }
+  } catch (_) {}
+  if (ps._unmuteFailsafe) {
+    clearTimeout(ps._unmuteFailsafe);
+    ps._unmuteFailsafe = null;
+  }
+}
+
+// ===========================================
 // LIVE POSITION HELPER
 // ===========================================
 // Recompute the expected playback position right now, accounting for clock offset.
@@ -335,6 +360,7 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
   window._clockOffset = clockOffset;
 
   // Destroy old player
+  try { clearTimeout(window.playerState._unmuteFailsafe); } catch (_) {}
   try { window.playerState.ytPlayer?.destroy(); } catch (_) {}
   window.scWidget = null;
 
@@ -419,12 +445,11 @@ function initYouTubePlayer(videoId, startSeconds) {
     events: {
       onReady: (e) => {
         window.playerState.playerReady = true;
-        if (window.playerState._startMuted) {
-          e.target.mute();
-        } else {
-          e.target.unMute();
-          e.target.setVolume(window.playerState.volume);
-        }
+        // Always boot muted — the settling phase shouldn't be audible.
+        // unmuteWhenSettled() restores audio once timing is confirmed.
+        e.target.mute();
+        e.target.setVolume(window.playerState.volume);
+        window.playerState._unmuteFailsafe = setTimeout(unmuteWhenSettled, 4000);
         // No blanket re-seek here — the start position already compensates
         // for boot latency; a second seek would force a visible rebuffer.
         e.target.playVideo();
@@ -442,16 +467,25 @@ function initYouTubePlayer(videoId, startSeconds) {
       onStateChange: (e) => {
         // First moment of actual playback: learn the real boot latency and
         // fine-correct only if the compensated start still missed by >1.5s.
-        if (e.data === 1 && !window.playerState._playbackTuned) {
-          window.playerState._playbackTuned = true;
-          recordBootLatency((Date.now() - (window.playerState._createdAt || Date.now())) / 1000);
-          try {
-            const cur = e.target.getCurrentTime();
-            const live = getLivePosition();
-            if (window.playerState.startedAt && Math.abs(live - cur) > 1.5) {
-              e.target.seekTo(live, true);
-            }
-          } catch (_) {}
+        // Audio stays muted until timing is confirmed — either immediately
+        // (close enough) or on the PLAYING event after the correction seek.
+        if (e.data === 1) {
+          if (!window.playerState._playbackTuned) {
+            window.playerState._playbackTuned = true;
+            recordBootLatency((Date.now() - (window.playerState._createdAt || Date.now())) / 1000);
+            let corrected = false;
+            try {
+              const cur = e.target.getCurrentTime();
+              const live = getLivePosition();
+              if (window.playerState.startedAt && Math.abs(live - cur) > 1.5) {
+                e.target.seekTo(live, true);
+                corrected = true;
+              }
+            } catch (_) {}
+            if (!corrected) unmuteWhenSettled();
+          } else {
+            unmuteWhenSettled();
+          }
         }
         // Track ended
         if (e.data === 0 && !window.playerState.endTriggered) {
