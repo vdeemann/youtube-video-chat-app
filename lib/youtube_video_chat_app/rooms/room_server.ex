@@ -88,7 +88,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   def init(room_id) do
     room = YoutubeVideoChatApp.Rooms.get_room!(room_id)
     state = %__MODULE__{room_id: room_id, host_id: room.host_id}
-    {:ok, state, @idle_timeout}
+    {:ok, restore_persisted(state), @idle_timeout}
   end
 
   # --- get_state: return everything the client needs --------------------------
@@ -218,6 +218,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     else
       st
     end
+    persist(st)
     {:noreply, st, @idle_timeout}
   end
 
@@ -316,13 +317,11 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   # -- Timer helpers -----------------------------------------------------------
 
   defp schedule_timer_for_track(st, track) do
-    duration = (track[:duration] || track.duration || 300)
     # Use a generous initial timer since the default duration (180s) from URL
     # parsing is often wrong.  The host's progress reports will reschedule
     # the timer with the real duration, so this just needs to be long enough
     # to avoid premature auto-advance on longer tracks.
-    safe_duration = max(duration, 600)
-    schedule_timer(st, safe_duration + @auto_advance_buffer_s)
+    schedule_timer(st, safe_duration_s(track))
   end
 
   defp schedule_timer(st, seconds) do
@@ -377,12 +376,89 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   # -- Broadcast ---------------------------------------------------------------
 
+  # Every state mutation flows through broadcast/1, so it doubles as the
+  # persistence write-through point.
   defp broadcast(st) do
+    persist(st)
+
     PubSub.broadcast!(
       YoutubeVideoChatApp.PubSub,
       "room:#{st.room_id}",
       {:room_state_changed, public_state(st)}
     )
+  end
+
+  # ── Playback state persistence ──────────────────────────────────────────────
+  # Playback state lives in this process's memory; without a persisted copy a
+  # crash, code reload, or deploy silently resets the room.  DB errors are
+  # swallowed — persistence must never take down live playback.
+
+  defp persist(st) do
+    YoutubeVideoChatApp.Rooms.save_playback_state(st.room_id, %{
+      "current_track" => st.current_track,
+      "started_at" => st.started_at,
+      "queue" => :queue.to_list(st.queue)
+    })
+  rescue
+    e -> Logger.warning("[RoomServer] Failed to persist state for #{st.room_id}: #{inspect(e)}")
+  end
+
+  defp restore_persisted(st) do
+    case YoutubeVideoChatApp.Rooms.load_playback_state(st.room_id) do
+      nil ->
+        st
+
+      saved ->
+        current = normalize_media(saved["current_track"])
+        queue_list = Enum.map(saved["queue"] || [], &normalize_media/1)
+        started_at = saved["started_at"]
+
+        st = %{st |
+          current_track: current,
+          started_at: started_at,
+          queue: :queue.from_list(queue_list),
+          queue_length: length(queue_list)
+        }
+
+        cond do
+          current == nil ->
+            st
+
+          # Track ended while we were down — move on (radio semantics:
+          # position tracks wall time, matching the live-room clock model).
+          stale_track?(current, started_at) ->
+            advance(st)
+
+          true ->
+            elapsed_s = (now_ms() - (started_at || now_ms())) / 1000
+            remaining = max(safe_duration_s(current) - elapsed_s, 10)
+            Logger.info("[RoomServer] Restored playback state for room #{st.room_id} (#{st.queue_length} queued)")
+            schedule_timer(st, remaining)
+        end
+    end
+  rescue
+    e ->
+      Logger.warning("[RoomServer] Failed to restore state for #{st.room_id}: #{inspect(e)}")
+      st
+  end
+
+  defp stale_track?(_current, nil), do: true
+  defp stale_track?(current, started_at) do
+    (now_ms() - started_at) / 1000 > safe_duration_s(current)
+  end
+
+  defp safe_duration_s(track) do
+    max(track[:duration] || 300, 600) + @auto_advance_buffer_s
+  end
+
+  # JSONB round-trips turn media maps into string keys; the rest of the code
+  # expects atom keys, so rebuild with the known media shape.
+  @media_keys ~w(id type media_id title thumbnail duration embed_url original_url
+                 added_by_username added_by_id added_by_color added_at)a
+
+  defp normalize_media(nil), do: nil
+  defp normalize_media(media) do
+    Map.new(@media_keys, fn key -> {key, media[Atom.to_string(key)] || media[key]} end)
   end
 
   defp now_ms, do: System.system_time(:millisecond)

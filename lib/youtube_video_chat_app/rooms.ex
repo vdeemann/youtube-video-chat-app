@@ -97,4 +97,30 @@ defmodule YoutubeVideoChatApp.Rooms do
         :ok
     end
   end
+
+  @doc """
+  Persist a RoomServer's playback state snapshot.  Called on every state
+  mutation so playback survives crashes, code reloads, and restarts.
+  """
+  def save_playback_state(room_id, state) when is_map(state) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.insert_all(
+      "room_playback_states",
+      [%{room_id: Ecto.UUID.dump!(room_id), state: state, inserted_at: now, updated_at: now}],
+      on_conflict: {:replace, [:state, :updated_at]},
+      conflict_target: [:room_id]
+    )
+
+    :ok
+  end
+
+  @doc "Load a room's persisted playback state (map with string keys) or nil."
+  def load_playback_state(room_id) do
+    from(p in "room_playback_states",
+      where: p.room_id == type(^room_id, :binary_id),
+      select: p.state
+    )
+    |> Repo.one()
+  end
 end
