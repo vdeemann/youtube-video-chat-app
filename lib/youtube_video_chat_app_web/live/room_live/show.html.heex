@@ -961,7 +961,7 @@
               </div>
             <% else %>
               <!-- Regular Chat Message -->
-              <div class="flex items-start gap-2 text-sm max-w-2xl group">
+              <div class="flex items-start gap-2 text-sm max-w-xs group">
                 <span class="font-bold shrink-0" style={"color: #{message.color}; text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"} >
                   <%= message.username %>:
                 </span>
@@ -1105,9 +1105,27 @@
             </div>
           </div>
 
-          <!-- Track analysis readout: key/BPM + live chord, inline with the reactions -->
-          <%= if @current_media && @current_analysis do %>
-            <div class="flex items-center gap-3 shrink-0 pl-1">
+        </div>
+
+        <!-- User Info (centered) + analysis readout (right, under the emojis) -->
+        <div class="mt-2 max-w-4xl mx-auto flex items-center">
+          <div class="flex-1"></div>
+          <span class="text-xs text-gray-500 whitespace-nowrap">
+            <%= if @is_guest do %>
+              Watching as
+              <span style={"color: #{@user.color}"}>
+                <%= @user.username %>
+              </span>
+              <span class="text-yellow-500">(Guest)</span>
+            <% else %>
+              Chatting as
+              <span style={"color: #{@user.color}"}>
+                <%= @user.username %>
+              </span>
+            <% end %>
+          </span>
+          <div class="flex-1 flex items-center justify-end gap-3 min-w-0">
+            <%= if @current_media && @current_analysis do %>
               <span class="text-purple-300 text-sm font-semibold whitespace-nowrap">
                 ♪ <%= @current_analysis.key %> <%= @current_analysis.scale %>
               </span>
@@ -1121,29 +1139,11 @@
                   <span id="current-chord" class="text-white font-bold text-base min-w-[3rem] text-center">—</span>
                 </span>
               <% end %>
-            </div>
-          <% end %>
-          <%= if @current_media && !@current_analysis && @analysis_pending do %>
-            <span class="text-gray-400 text-xs animate-pulse whitespace-nowrap shrink-0 pl-1">♪ analyzing…</span>
-          <% end %>
-        </div>
-
-        <!-- User Info -->
-        <div class="text-center mt-2">
-          <span class="text-xs text-gray-500">
-            <%= if @is_guest do %>
-              Watching as 
-              <span style={"color: #{@user.color}"}>
-                <%= @user.username %>
-              </span>
-              <span class="text-yellow-500">(Guest)</span>
-            <% else %>
-              Chatting as 
-              <span style={"color: #{@user.color}"}>
-                <%= @user.username %>
-              </span>
             <% end %>
-          </span>
+            <%= if @current_media && !@current_analysis && @analysis_pending do %>
+              <span class="text-gray-400 text-xs animate-pulse whitespace-nowrap">♪ analyzing…</span>
+            <% end %>
+          </div>
         </div>
       </div>
     </div>
