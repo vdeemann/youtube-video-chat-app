@@ -345,6 +345,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
       type: get.(:type),
       media_id: get.(:media_id),
       title: get.(:title) || "Unknown",
+      artist: get.(:artist),
       thumbnail: get.(:thumbnail),
       duration: get.(:duration) || 300,
       embed_url: get.(:embed_url),
@@ -453,7 +454,7 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
 
   # JSONB round-trips turn media maps into string keys; the rest of the code
   # expects atom keys, so rebuild with the known media shape.
-  @media_keys ~w(id type media_id title thumbnail duration embed_url original_url
+  @media_keys ~w(id type media_id title artist thumbnail duration embed_url original_url
                  added_by_username added_by_id added_by_color added_at)a
 
   defp normalize_media(nil), do: nil

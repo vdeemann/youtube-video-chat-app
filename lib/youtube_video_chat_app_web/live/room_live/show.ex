@@ -982,30 +982,47 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
 
     cond do
       youtube_result != nil ->
-        %{
-          "type" => "youtube",
-          "media_id" => youtube_result,
-          "title" => "YouTube Video",
-          "thumbnail" => "https://img.youtube.com/vi/#{youtube_result}/mqdefault.jpg",
-          "duration" => 180,
-          "embed_url" => "https://www.youtube.com/embed/#{youtube_result}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
-        }
+        youtube_media(youtube_result)
 
       String.contains?(String.downcase(url), "soundcloud.com") ->
         extract_soundcloud_data(url)
 
       String.match?(url, ~r/^[A-Za-z0-9_-]{11}$/) ->
-        %{
-          "type" => "youtube",
-          "media_id" => url,
-          "title" => "YouTube Video",
-          "thumbnail" => "https://img.youtube.com/vi/#{url}/mqdefault.jpg",
-          "duration" => 180,
-          "embed_url" => "https://www.youtube.com/embed/#{url}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
-        }
+        youtube_media(url)
 
       true -> nil
     end
+  end
+
+  defp youtube_media(id) do
+    oembed =
+      fetch_oembed(
+        "https://www.youtube.com/oembed?format=json&url=" <>
+          URI.encode_www_form("https://www.youtube.com/watch?v=#{id}")
+      )
+
+    %{
+      "type" => "youtube",
+      "media_id" => id,
+      "title" => (oembed && oembed["title"]) || "YouTube Video",
+      "artist" => oembed && oembed["author_name"],
+      "thumbnail" => "https://img.youtube.com/vi/#{id}/mqdefault.jpg",
+      "duration" => 180,
+      "embed_url" => "https://www.youtube.com/embed/#{id}?enablejsapi=1&autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&origin=http://localhost:4000"
+    }
+  end
+
+  # Best-effort metadata lookup (title/artist/artwork).  A slow or failed
+  # response must never block adding a track — short timeout, nil on error.
+  defp fetch_oembed(url) do
+    request = Finch.build(:get, url)
+
+    case Finch.request(request, YoutubeVideoChatApp.Finch, receive_timeout: 1500) do
+      {:ok, %Finch.Response{status: 200, body: body}} -> Jason.decode!(body)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   defp extract_youtube_id(url) do
@@ -1054,11 +1071,18 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       media_id = :crypto.hash(:md5, clean_url) |> Base.encode16() |> String.slice(0..10)
       encoded_url = URI.encode(clean_url)
 
+      # SoundCloud's public oEmbed gives the real title, artist, and cover art
+      oembed =
+        fetch_oembed(
+          "https://soundcloud.com/oembed?format=json&url=" <> URI.encode_www_form(clean_url)
+        )
+
       %{
         "type" => "soundcloud",
         "media_id" => media_id,
-        "title" => "#{track_name} by #{artist_name}",
-        "thumbnail" => generate_soundcloud_thumbnail(),
+        "title" => (oembed && oembed["title"]) || "#{track_name} by #{artist_name}",
+        "artist" => oembed && oembed["author_name"],
+        "thumbnail" => (oembed && oembed["thumbnail_url"]) || generate_soundcloud_thumbnail(),
         "duration" => 180,
         "embed_url" => "https://w.soundcloud.com/player/?url=#{encoded_url}&color=%23ff5500&auto_play=true&buying=false&liking=false&download=false&sharing=false&show_artwork=true&show_comments=false&show_playcount=false&show_user=true&hide_related=true&visual=true&start_track=0&callback=true",
         "original_url" => clean_url

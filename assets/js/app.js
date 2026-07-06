@@ -803,6 +803,12 @@ const ChatScroll = {
       window._chatScrollPosition = this.el.scrollTop;
       window._chatWasAtBottom = atBottom;
     });
+    // Chat images (GIFs) finish loading after DOM patches and expand the
+    // scroll height; when pinned to the bottom, stay pinned as they load.
+    // 'load' doesn't bubble, so listen in the capture phase.
+    this.el.addEventListener('load', () => {
+      if (window._chatWasAtBottom && !this.userScrolled) this.scrollToBottom();
+    }, true);
     this.observer.observe(this.el, { childList: true, subtree: true });
   },
   beforeUpdate() {
@@ -813,7 +819,11 @@ const ChatScroll = {
   updated() {
     const c = this.msgCount();
     if (c === this.savedCount && window._chatScrollPosition !== undefined) {
-      this.el.scrollTop = window._chatScrollPosition;
+      // Re-render without new messages (e.g. toggling the queue panel):
+      // if we were pinned to the bottom, stay pinned — restoring a raw
+      // scrollTop mis-lands when images haven't re-laid-out yet.
+      if (window._chatWasAtBottom) this.scrollToBottom();
+      else this.el.scrollTop = window._chatScrollPosition;
     } else if (c > this.savedCount && !this.userScrolled) {
       this.scrollToBottom();
     }

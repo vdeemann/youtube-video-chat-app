@@ -703,16 +703,17 @@
                 <div class="flex items-center gap-3">
                   <div class="relative flex-shrink-0">
                     <% media_type = Map.get(@current_media, :type) || Map.get(@current_media, "type") %>
+                    <% now_playing_thumb = Map.get(@current_media, :thumbnail) || Map.get(@current_media, "thumbnail") %>
                     <%= cond do %>
-                      <% media_type == "soundcloud" -> %>
+                      <% media_type == "soundcloud" && (!now_playing_thumb || String.starts_with?(now_playing_thumb, "data:")) -> %>
                         <div class="w-16 h-16 bg-gradient-to-br from-orange-500 to-orange-600 rounded flex items-center justify-center">
                           <svg class="w-8 h-8 text-white" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M11.5 8.5v7h1v-7c-.3-.2-.7-.3-1-.5zm-2 2.5v4h1v-5c-.4.1-.7.3-1 .5zm4 0v5h1v-5c-.3-.2-.7-.4-1-.5zm2 1v4h1v-4c-.3-.1-.7-.2-1-.3zm2 .5v3h1v-3c-.3-.1-.7-.1-1-.2zm2 .5v2.5h1V13c-.3 0-.7 0-1 0zm2 0v2.5h1c0-1-.4-1.8-1-2.5z"/>
                           </svg>
                         </div>
                       <% true -> %>
-                        <img 
-                          src={Map.get(@current_media, :thumbnail) || Map.get(@current_media, "thumbnail")}
+                        <img
+                          src={now_playing_thumb}
                           alt={Map.get(@current_media, :title) || Map.get(@current_media, "title")}
                           class="w-16 h-16 object-cover rounded"
                         />
@@ -728,6 +729,10 @@
                     <p class="text-white font-medium text-sm truncate">
                       <%= Map.get(@current_media, :title) || Map.get(@current_media, "title") || "Unknown" %>
                     </p>
+                    <% now_playing_artist = Map.get(@current_media, :artist) || Map.get(@current_media, "artist") %>
+                    <%= if now_playing_artist do %>
+                      <p class="text-gray-300 text-xs truncate"><%= now_playing_artist %></p>
+                    <% end %>
                     <p class="text-gray-400 text-xs">
                       Added by <%= Map.get(@current_media, :added_by_username) || Map.get(@current_media, "added_by_username") || "Unknown" %>
                     </p>
@@ -830,17 +835,18 @@
                       <span class="text-gray-500 text-xs font-medium"><%= index + 1 %></span>
                     </div>
                     
-                    <!-- Thumbnail -->
+                    <!-- Thumbnail (SoundCloud tracks show real cover art when
+                         oEmbed provided it; the generic icon is the fallback) -->
                     <div class="relative flex-shrink-0">
                       <%= cond do %>
-                        <% media_type == "soundcloud" -> %>
+                        <% media_type == "soundcloud" && (!media_thumbnail || String.starts_with?(media_thumbnail, "data:")) -> %>
                           <div class="w-12 h-12 bg-gradient-to-br from-orange-500 to-orange-600 rounded flex items-center justify-center">
                             <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
                               <path d="M11.5 8.5v7h1v-7c-.3-.2-.7-.3-1-.5zm-2 2.5v4h1v-5c-.4.1-.7.3-1 .5zm4 0v5h1v-5c-.3-.2-.7-.4-1-.5zm2 1v4h1v-4c-.3-.1-.7-.2-1-.3zm2 .5v3h1v-3c-.3-.1-.7-.1-1-.2zm2 .5v2.5h1V13c-.3 0-.7 0-1 0zm2 0v2.5h1c0-1-.4-1.8-1-2.5z"/>
                             </svg>
                           </div>
                         <% true -> %>
-                          <img 
+                          <img
                             src={media_thumbnail}
                             alt={media_title}
                             class="w-12 h-12 object-cover rounded"
@@ -859,7 +865,8 @@
                     <!-- Track Info -->
                     <div class="flex-1 min-w-0">
                       <p class="text-white text-xs truncate"><%= media_title %></p>
-                      <p class="text-gray-500 text-xs">by <%= added_by %></p>
+                      <% media_artist = Map.get(media, :artist) || Map.get(media, "artist") %>
+                      <p class="text-gray-500 text-xs truncate"><%= if media_artist do %><%= media_artist %> • <% end %>by <%= added_by %></p>
                       <% analysis = Map.get(@queue_analyses, {media_type, Map.get(media, :media_id) || Map.get(media, "media_id")}) %>
                       <%= if analysis do %>
                         <p class="text-purple-300/80 text-xs">
@@ -996,7 +1003,7 @@
               <input 
                 type="text"
                 name="message"
-                placeholder="Add a comment..."
+                placeholder="What's on your mind?"
                 class="flex-1 px-4 py-2.5 bg-black/60 text-white rounded-full border border-black/80 backdrop-blur focus:border-black/80 focus:outline-none focus:ring-0 placeholder-gray-400 text-sm font-bold"
                 style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"
                 autocomplete="off"
