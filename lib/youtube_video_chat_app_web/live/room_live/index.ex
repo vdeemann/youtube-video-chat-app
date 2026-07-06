@@ -25,7 +25,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
      |> assign(:show_auth_modal, false)
      |> assign(:auth_mode, :login)  # :login or :register
      |> assign(:auth_error, nil)
-     |> assign(:page_title, "Browse Rooms")}
+     |> assign(:page_title, "Pass the Aux")}
   end
 
   @impl true
@@ -205,12 +205,13 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
         </div>
         
         <div class="text-center mb-12">
-          <h1 class="text-5xl font-bold text-white mb-4">
-            YouTube Watch Party 🎉
+          <h1
+            class="text-6xl md:text-7xl text-amber-300 drop-shadow-[0_2px_18px_rgba(251,191,36,0.25)] select-none"
+            style="font-family: 'Fraunces', Georgia, serif;"
+          >
+            <span class="italic font-medium">Pass the</span>
+            <span class="font-black tracking-tight">Aux</span>
           </h1>
-          <p class="text-xl text-purple-200">
-            Watch YouTube videos together with floating live chat
-          </p>
         </div>
         
         <!-- Create Room Button -->
@@ -309,50 +310,6 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
           <% end %>
         </div>
         
-        <!-- Features -->
-        <div class="max-w-4xl mx-auto mt-16 grid grid-cols-1 md:grid-cols-3 gap-8">
-          <div class="text-center">
-            <div class="text-4xl mb-4">💬</div>
-            <h3 class="text-white font-bold mb-2">Floating Live Chat</h3>
-            <p class="text-gray-400">Instagram Live-style comments that float across the video</p>
-          </div>
-          <div class="text-center">
-            <div class="text-4xl mb-4">🎵</div>
-            <h3 class="text-white font-bold mb-2">DJ-Style Queue</h3>
-            <p class="text-gray-400">Add videos to the queue and let everyone vote</p>
-          </div>
-          <div class="text-center">
-            <div class="text-4xl mb-4">🔄</div>
-            <h3 class="text-white font-bold mb-2">Perfect Sync</h3>
-            <p class="text-gray-400">Everyone watches in perfect synchronization</p>
-          </div>
-        </div>
-        
-        <!-- Guest vs Registered info -->
-        <div class="max-w-2xl mx-auto mt-16 bg-white/5 backdrop-blur rounded-xl p-6 border border-white/10">
-          <h3 class="text-white font-bold text-lg mb-4 text-center">Guest vs Registered Users</h3>
-          <div class="grid grid-cols-2 gap-6">
-            <div>
-              <h4 class="text-yellow-400 font-semibold mb-2">👤 Guests Can:</h4>
-              <ul class="text-gray-400 text-sm space-y-1">
-                <li>✓ Watch videos</li>
-                <li>✓ Listen to music</li>
-                <li>✓ Join any room</li>
-              </ul>
-            </div>
-            <div>
-              <h4 class="text-green-400 font-semibold mb-2">🌟 Registered Users Can:</h4>
-              <ul class="text-gray-400 text-sm space-y-1">
-                <li>✓ Everything guests can do</li>
-                <li>✓ Create rooms</li>
-                <li>✓ Add YouTube videos</li>
-                <li>✓ Add SoundCloud tracks</li>
-                <li>✓ Chat with others</li>
-                <li>✓ Send reactions</li>
-              </ul>
-            </div>
-          </div>
-        </div>
       </div>
       
       <!-- Auth Modal -->
