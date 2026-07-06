@@ -1087,7 +1087,10 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
       if String.match?(part, url_regex) do
         escaped_url = part |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
         if String.match?(part, image_regex) do
-          "<div class=\"my-2\"><img src=\"#{escaped_url}\" alt=\"Shared image\" class=\"rounded-lg max-w-sm\" loading=\"lazy\" /></div>"
+          # Inline styles: this HTML is built as a string, so Tailwind's
+          # scanner can't be trusted to keep utility classes for it.  The
+          # image fills the chat column width, height scales to match.
+          "<div class=\"my-2\"><img src=\"#{escaped_url}\" alt=\"Shared image\" class=\"rounded-lg\" style=\"max-width:100%;height:auto;\" loading=\"lazy\" /></div>"
         else
           "<a href=\"#{escaped_url}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"underline hover:text-purple-300 transition\">#{escaped_url}</a>"
         end
