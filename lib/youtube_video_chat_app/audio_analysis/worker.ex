@@ -43,6 +43,10 @@ defmodule YoutubeVideoChatApp.AudioAnalysis.Worker do
         {:noreply, state}
 
       MapSet.member?(state.keys, key) ->
+        # Already queued — but an urgent request (the track just started
+        # playing) moves it to the front instead of waiting out a
+        # multi-hour playlist backlog.
+        state = if priority == :urgent, do: promote(state, key), else: state
         {:noreply, state}
 
       not analyzable?(type, id) ->
@@ -95,6 +99,22 @@ defmodule YoutubeVideoChatApp.AudioAnalysis.Worker do
   defp finish_current(state, key) do
     %{state | task: nil, keys: MapSet.delete(state.keys, key)}
     |> maybe_start_next()
+  end
+
+  # Move an already-queued key to the front of the queue (no-op when it's
+  # the one currently being analyzed).
+  defp promote(%{task: {_task, key}} = state, key), do: state
+
+  defp promote(state, key) do
+    {matches, rest} =
+      state.queue
+      |> :queue.to_list()
+      |> Enum.split_with(fn {type, id, _url} -> {type, id} == key end)
+
+    case matches do
+      [entry | _] -> %{state | queue: :queue.from_list([entry | rest])}
+      [] -> state
+    end
   end
 
   defp maybe_start_next(%{task: nil} = state) do
