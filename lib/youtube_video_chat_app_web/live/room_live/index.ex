@@ -5,7 +5,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
   @impl true
   def mount(_params, _session, socket) do
     rooms = Rooms.list_public_rooms()
-    
+    room_thumbs = Rooms.playback_thumbnails(Enum.map(rooms, & &1.id))
+
     # Check if user is logged in
     current_user = socket.assigns[:current_user]
     is_guest = is_nil(current_user)
@@ -20,6 +21,7 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
     {:ok,
      socket
      |> assign(:rooms, rooms)
+     |> assign(:room_thumbs, room_thumbs)
      |> assign(:is_guest, is_guest)
      |> assign(:user_room, user_room)
      |> assign(:show_auth_modal, false)
@@ -72,10 +74,11 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
       if room.host_id == user.id do
         Rooms.delete_room(room)
         rooms = Rooms.list_public_rooms()
-        
+
         {:noreply,
          socket
          |> assign(:rooms, rooms)
+         |> assign(:room_thumbs, Rooms.playback_thumbnails(Enum.map(rooms, & &1.id)))
          |> assign(:user_room, nil)
          |> put_flash(:info, "Room deleted successfully")}
       else
@@ -295,21 +298,36 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Index do
               <%= for room <- @rooms do %>
                 <.link
                   navigate={~p"/room/#{room.slug}"}
-                  class="block bg-white/10 backdrop-blur rounded-xl p-6 hover:bg-white/20 transition transform hover:scale-105"
+                  class="relative block aspect-square overflow-hidden bg-white/10 backdrop-blur rounded-xl hover:bg-white/20 transition transform hover:scale-105 group"
                 >
-                  <h3 class="text-xl font-bold text-white mb-2">
-                    <%= room.name %>
-                  </h3>
-                  <p class="text-purple-300 text-sm mb-4">
-                    Room Code: <%= room.slug %>
-                  </p>
-                  <div class="flex justify-between items-center">
-                    <span class="text-gray-400 text-sm">
-                      Created <%= format_time_ago(room.inserted_at) %>
-                    </span>
-                    <span class="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-sm">
-                      Join →
-                    </span>
+                  <%= if thumb = @room_thumbs[room.id] do %>
+                    <!-- Now-playing artwork fills the tile, dimmed so text stays readable -->
+                    <img
+                      src={thumb}
+                      alt=""
+                      class="absolute inset-0 w-full h-full object-cover opacity-50 group-hover:opacity-60 transition-opacity"
+                      loading="lazy"
+                    />
+                    <div class="absolute inset-0 bg-gradient-to-b from-black/50 via-transparent to-black/30"></div>
+                  <% end %>
+                  <div
+                    class="relative z-10 p-6"
+                    style="text-shadow: -1px -1px 0 rgba(0,0,0,.85), 0 -1px 0 rgba(0,0,0,.85), 1px -1px 0 rgba(0,0,0,.85), -1px 0 0 rgba(0,0,0,.85), 1px 0 0 rgba(0,0,0,.85), -1px 1px 0 rgba(0,0,0,.85), 0 1px 0 rgba(0,0,0,.85), 1px 1px 0 rgba(0,0,0,.85);"
+                  >
+                    <h3 class="text-xl font-bold text-white mb-2">
+                      <%= room.name %>
+                    </h3>
+                    <p class="text-purple-200 text-sm mb-4">
+                      Room Code: <%= room.slug %>
+                    </p>
+                    <div class="flex justify-between items-center">
+                      <span class="text-gray-300 text-sm">
+                        Created <%= format_time_ago(room.inserted_at) %>
+                      </span>
+                      <span class="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-sm">
+                        Join →
+                      </span>
+                    </div>
                   </div>
                 </.link>
               <% end %>

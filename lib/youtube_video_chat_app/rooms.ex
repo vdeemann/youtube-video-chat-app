@@ -123,4 +123,33 @@ defmodule YoutubeVideoChatApp.Rooms do
     )
     |> Repo.one()
   end
+
+  @doc """
+  Current-track artwork per room for the room cards, read from the persisted
+  playback snapshots (works even while a room's server is idle).  Returns a
+  map of room_id => thumbnail URL; rooms without usable artwork are absent.
+  """
+  def playback_thumbnails(room_ids) when is_list(room_ids) do
+    ids = Enum.map(room_ids, &Ecto.UUID.dump!/1)
+
+    from(p in "room_playback_states", where: p.room_id in ^ids, select: {p.room_id, p.state})
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {raw_id, state}, acc ->
+      {:ok, id} = Ecto.UUID.load(raw_id)
+
+      case snapshot_thumbnail(state) do
+        nil -> acc
+        thumb -> Map.put(acc, id, thumb)
+      end
+    end)
+  end
+
+  # The now-playing track's artwork, or the next queued track's as fallback.
+  # Generated data-URI placeholders (SoundCloud fallback art) don't count.
+  defp snapshot_thumbnail(state) do
+    track = state["current_track"] || List.first(state["queue"] || [])
+    thumb = track && track["thumbnail"]
+
+    if is_binary(thumb) and not String.starts_with?(thumb, "data:"), do: thumb, else: nil
+  end
 end
