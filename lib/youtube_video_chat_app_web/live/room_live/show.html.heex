@@ -960,12 +960,15 @@
     <!-- Bottom Section: Chat History & Input -->
     <div id="bottom-bar" class="absolute bottom-0 left-0 right-0 pointer-events-auto">
       <!-- Scrollable Chat History -->
-      <div 
+      <!-- Chat lives in its own box on the left: the scroll container is
+           width-constrained so wheel/touch scrolling only works inside it,
+           not from anywhere across the page. -->
+      <div
         :if={@show_chat}
-        class="relative pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20"
+        class="relative pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20 w-[30rem] max-w-[45vw]"
         id="chat-history"
         phx-hook="ChatScroll"
-        style="height: 450px; margin-bottom: 45px; padding-left: 1rem; margin-right: 0;"
+        style="height: 450px; margin-bottom: 45px; padding-left: 1rem;"
       >
         <div class="space-y-1" id="messages-container">
           <%= for message <- Enum.reverse(@messages) do %>
