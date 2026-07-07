@@ -989,18 +989,14 @@
                 </span>
               </div>
             <% else %>
-              <!-- Regular Chat Message -->
-              <div class="flex items-start gap-2 text-sm max-w-xs group">
-                <span class="font-bold shrink-0" style={"color: #{message.color}; text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"} >
-                  <%= message.username %>:
-                </span>
-                <span class="text-white break-words font-semibold min-w-0" style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;">
-                  <%= linkify_text(message.text) %>
-                </span>
+              <!-- Regular Chat Message: username + text flow as one wrapping
+                   block so a long username doesn't squeeze the message into a
+                   one-word-per-line sliver. -->
+              <div class="text-sm max-w-full group break-words leading-snug">
+                <span class="font-bold" style={"color: #{message.color}; text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"}><%= message.username %>:</span>
+                <span class="text-white font-semibold" style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"><%= linkify_text(message.text) %></span>
                 <!-- Timestamp on hover -->
-                <span class="opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 text-xs whitespace-nowrap shrink-0" style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;">
-                  <%= Calendar.strftime(message.timestamp, "%I:%M %p") %>
-                </span>
+                <span class="opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 text-xs whitespace-nowrap ml-1" style="text-shadow: -1px -1px 0 #000, 0 -1px 0 #000, 1px -1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, -1px 1px 0 #000, 0 1px 0 #000, 1px 1px 0 #000;"><%= Calendar.strftime(message.timestamp, "%I:%M %p") %></span>
               </div>
             <% end %>
           <% end %>
