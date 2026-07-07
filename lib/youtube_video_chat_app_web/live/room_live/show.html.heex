@@ -613,9 +613,12 @@
       </div>
     </div>
     
-    <!-- Side Panel: Queue (Right Side).  The id keeps LiveView's DOM diff
-         from mis-pairing this conditional panel with the chat section below,
-         which used to recreate the chat DOM (losing scroll position). -->
+    <!-- Side Panel: Queue (Right Side).  Wrapped in an ALWAYS-present
+         container (display:contents) so the chat's bottom-bar always has the
+         same preceding sibling.  Toggling the queue only adds/removes a child
+         of this wrapper, so morphdom never disturbs (and never resets the
+         scroll of) the chat DOM below. -->
+    <div id="queue-panel-wrapper" class="contents">
     <div
       :if={@show_queue}
       id="queue-panel"
@@ -956,16 +959,18 @@
         </div>
       </div>
     </div>
-    
+    </div><!-- /#queue-panel-wrapper -->
+
     <!-- Bottom Section: Chat History & Input -->
     <div id="bottom-bar" class="absolute bottom-0 left-0 right-0 pointer-events-auto">
       <!-- Scrollable Chat History -->
       <!-- Chat lives in its own box on the left: the scroll container is
-           width-constrained so wheel/touch scrolling only works inside it,
-           not from anywhere across the page. -->
+           width- AND height-constrained so wheel/touch scrolling only works
+           inside it (scrollbar sits at the box's right edge), never from
+           elsewhere on the page. -->
       <div
         :if={@show_chat}
-        class="relative pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20 w-[30rem] max-w-[45vw]"
+        class="relative pb-2 overflow-y-auto scrollbar-thin scrollbar-thumb-white/20 w-[22rem] max-w-[80vw]"
         id="chat-history"
         phx-hook="ChatScroll"
         style="height: 450px; margin-bottom: 45px; padding-left: 1rem;"
