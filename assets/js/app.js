@@ -370,18 +370,25 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
   if (!container) return;
 
   // If this is the exact same queue entry already set up here, don't recreate.
-  // We compare the unique track id (UUID), not media_id, so duplicate tracks in the queue
-  // (same video/song queued multiple times) are correctly treated as different entries.
-  // After LiveView navigation the DOM is destroyed but window.playerState persists,
-  // so we verify the actual player element is still in the page.
+  // Prefer the unique track id (UUID) so duplicate tracks in the queue (same
+  // video/song queued multiple times) are treated as different entries — but
+  // fall back to media_id + type when the id is absent (e.g. an older
+  // persisted snapshot), so a duplicate event still dedupes instead of
+  // recreating the player.
   //
-  // NOTE: we intentionally do NOT require playerReady here.  A duplicate
-  // sync_player event (LiveView reconnect, a re-broadcast, request_player_state)
+  // We intentionally do NOT require playerReady here.  A duplicate sync_player
+  // event (LiveView reconnect/remount, a re-broadcast, request_player_state)
   // arriving while the player is still loading must be a no-op — tearing the
   // player down and recreating it mid-load is what made a freshly-joined video
-  // restart over and over during the first few seconds.
+  // restart over and over during the first few seconds.  After LiveView
+  // navigation the DOM is destroyed but window.playerState persists, so we
+  // also verify the actual player element is still in the page.
+  const ps = window.playerState;
+  const sameEntry = media.id
+    ? ps.trackId === media.id
+    : (ps.mediaId === media.media_id && ps.mediaType === media.type);
   const existingPlayer = document.getElementById('youtube-player-container') || document.getElementById('active-player');
-  if (media.id && window.playerState.trackId === media.id && existingPlayer) {
+  if (sameEntry && existingPlayer) {
     return;
   }
 
