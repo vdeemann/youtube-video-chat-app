@@ -235,6 +235,21 @@ loadYouTubeAPI();
 try { localStorage.removeItem('ytLoadComp'); localStorage.removeItem('scLoadComp'); } catch (_) {}
 
 // ===========================================
+// SYNC DIAGNOSTICS
+// ===========================================
+// Ring buffer of every player-sync decision.  Type syncLog() in the console
+// (or copy(syncLog())) to get a timeline — this is the first thing to grab
+// when a join misbehaves (restart loops, wrong position, silent player).
+window._syncEvents = [];
+function logSync(event, detail) {
+  const entry = `${new Date().toISOString().slice(11, 23)} ${event}${detail ? ' ' + detail : ''}`;
+  window._syncEvents.push(entry);
+  if (window._syncEvents.length > 80) window._syncEvents.shift();
+  console.log('[sync]', entry);
+}
+window.syncLog = () => window._syncEvents.join('\n');
+
+// ===========================================
 // SETTLE-THEN-UNMUTE
 // ===========================================
 // Players always boot muted so the settling phase (load at the predicted
@@ -373,6 +388,7 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
     : (ps.mediaId === media.media_id && ps.mediaType === media.type);
   const existingPlayer = document.getElementById('youtube-player-container') || document.getElementById('active-player');
   if (sameEntry && existingPlayer) {
+    logSync('kept', `same entry ${media.media_id} (dup sync_player ignored)`);
     return;
   }
 
@@ -381,6 +397,9 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
   // Adjust for clock difference: offset = Date.now() - serverNow
   const clockOffset = Date.now() - (serverNow || Date.now());
   const seekPosition = startedAt ? Math.max(0, (Date.now() - startedAt - clockOffset) / 1000) : 0;
+
+  logSync('create', `${media.type} ${media.media_id} seek=${seekPosition.toFixed(1)}s ` +
+    `prev=${ps.trackId || ps.mediaId || 'none'} sameEntry=${sameEntry} hadDom=${!!existingPlayer}`);
 
   // Store clockOffset so onReady/READY can recompute a fresh position
   window._clockOffset = clockOffset;
@@ -488,9 +507,14 @@ function initYouTubePlayer(videoId, startSeconds) {
           // so a duplicate onReady can never reload (which would look like a
           // restart).  Residual buffering drift is corrected once on PLAYING.
           window.playerState._loadedOnce = true;
-          e.target.loadVideoById({ videoId: videoId, startSeconds: Math.max(0, Math.floor(getLivePosition())) });
+          const target = Math.max(0, Math.floor(getLivePosition()));
+          logSync('yt_ready', `loadVideoById @ ${target}s`);
+          e.target.loadVideoById({ videoId: videoId, startSeconds: target });
         } else if (!midJoin) {
+          logSync('yt_ready', 'fresh track, playVideo @ 0');
           e.target.playVideo();
+        } else {
+          logSync('yt_ready', 'duplicate onReady ignored (_loadedOnce)');
         }
         // Host sends immediate progress report so the server recalibrates started_at right away
         if (window.playerState.isHost) {
@@ -516,8 +540,11 @@ function initYouTubePlayer(videoId, startSeconds) {
               const cur = e.target.getCurrentTime();
               const live = getLivePosition();
               if (window.playerState.startedAt && Math.abs(live - cur) > 3) {
+                logSync('yt_playing', `cur=${cur.toFixed(1)} live=${live.toFixed(1)} -> correcting`);
                 e.target.seekTo(live, true);
                 corrected = true;
+              } else {
+                logSync('yt_playing', `cur=${cur.toFixed(1)} live=${live.toFixed(1)} in sync`);
               }
             } catch (_) {}
             if (!corrected) markSettled();
@@ -527,6 +554,7 @@ function initYouTubePlayer(videoId, startSeconds) {
         }
         // Track ended
         if (e.data === 0 && !window.playerState.endTriggered) {
+          logSync('yt_ended', 'state 0');
           window.playerState.endTriggered = true;
           pushVideoEnded();
         }
@@ -534,10 +562,12 @@ function initYouTubePlayer(videoId, startSeconds) {
         // load/seek window, where a stray resume could fight buffering and
         // look like the video restarting.
         if (e.data === 2 && window.playerState._settled && !window.playerState.endTriggered) {
+          logSync('yt_autoresume', 'paused unexpectedly, resuming');
           setTimeout(() => { window.playerState.ytPlayer?.playVideo?.(); }, 500);
         }
       },
       onError: (e) => {
+        logSync('yt_error', String(e.data));
         console.error("[YT Player] Error:", e.data);
         // On error (video unavailable, embed blocked, etc.), advance the queue
         if (!window.playerState.endTriggered) {
@@ -633,6 +663,7 @@ function initSoundCloud(startPosition) {
 // PLACEHOLDER
 // ===========================================
 function showPlaceholder() {
+  logSync('placeholder', 'no media — player destroyed');
   try { window.playerState.ytPlayer?.destroy(); } catch (_) {}
   window.playerState.ytPlayer = null;
   window.scWidget = null;
@@ -664,10 +695,11 @@ function pushVideoEnded() {
   // event while the player is still loading and seeking to the live position.
   const age = Date.now() - (window.playerState._createdAt || 0);
   if (age < 5000) {
-    console.log("[pushVideoEnded] Suppressed — player is only", Math.round(age/1000), "s old (grace period)");
+    logSync('ended_suppressed', `player only ${Math.round(age / 1000)}s old (grace period)`);
     window.playerState.endTriggered = false;   // allow a real ended event later
     return;
   }
+  logSync('ended_sent', `track=${window.playerState.trackId || 'none'}`);
 
   // Include the track ID so the server can deduplicate (prevents stale reports
   // from a client that was still playing the previous track from skipping the new one).
@@ -726,7 +758,7 @@ setInterval(() => {
   // estimated duration, tell the server the track ended so the queue advances.
   // This catches cases where the player fails to initialize after rejoin.
   if (!window.playerState.playerReady && expected > 200) {
-    console.log("[syncLoop] Player never became ready and track duration exceeded, forcing advance");
+    logSync('force_advance', `player never ready, expected=${Math.round(expected)}s`);
     window.playerState.endTriggered = true;
     pushVideoEnded();
     return;
@@ -757,7 +789,10 @@ setInterval(() => {
         return;
       }
       // Only drift-correct after grace period, with a wider threshold (5s)
-      if (!inGracePeriod && Math.abs(expected - cur) > 5) window.playerState.ytPlayer.seekTo(expected, true);
+      if (!inGracePeriod && Math.abs(expected - cur) > 5) {
+        logSync('drift_seek', `yt cur=${cur.toFixed(1)} expected=${expected.toFixed(1)}`);
+        window.playerState.ytPlayer.seekTo(expected, true);
+      }
       // Host reports progress to keep the server's started_at calibrated
       if (window.playerState.isHost && cur > 0) pushVideoProgress(cur, dur || 0);
     } catch (_) {}
