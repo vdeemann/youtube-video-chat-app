@@ -228,27 +228,11 @@ loadYouTubeAPI();
   document.head.appendChild(s);
 })();
 
-// ===========================================
-// PLAYER LOAD COMPENSATION
-// ===========================================
-// Starting playback mid-track takes a moment (load/seek -> first playing
-// frame).  If we target the position computed "now", playback is already
-// behind when it begins.  We learn each player's typical latency on this
-// machine and target where the track WILL be, then fine-correct only if
-// we missed.
-function getLoadCompensation(key, fallback) {
-  const v = parseFloat(localStorage.getItem(key) || '');
-  return Number.isFinite(v) ? Math.min(Math.max(v, 0.2), 3) : fallback;
-}
-
-function recordLoadLatency(key, fallback, seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 15) return;
-  const blended = getLoadCompensation(key, fallback) * 0.7 + seconds * 0.3;
-  localStorage.setItem(key, blended.toFixed(2));
-}
-
-const YT_COMP = ['ytLoadComp', 0.8];
-const SC_COMP = ['scLoadComp', 0.6];
+// One-time cleanup of the old learned "load compensation" values.  That
+// predicted-latency approach overshot the seek target and accumulated across
+// joins (a rejoin landed seconds ahead of live), so it's been removed in
+// favor of loading directly at the live position and correcting once.
+try { localStorage.removeItem('ytLoadComp'); localStorage.removeItem('scLoadComp'); } catch (_) {}
 
 // ===========================================
 // SETTLE-THEN-UNMUTE
@@ -498,13 +482,14 @@ function initYouTubePlayer(videoId, startSeconds) {
         e.target.mute();
         e.target.setVolume(window.playerState.volume);
         window.playerState._unmuteFailsafe = setTimeout(markSettled, 4000);
-        window.playerState._loadStartedAt = Date.now();
-        if (midJoin) {
-          // Fresh live position plus this machine's learned load latency —
-          // the stream starts where the track will be when frames appear.
-          const target = getLivePosition() + getLoadCompensation(...YT_COMP);
-          e.target.loadVideoById({ videoId: videoId, startSeconds: Math.max(0, target) });
-        } else {
+        if (midJoin && !window.playerState._loadedOnce) {
+          // Load directly at the current live position: no 0:00 frames, and
+          // no predicted offset that could overshoot on a later join.  Guard
+          // so a duplicate onReady can never reload (which would look like a
+          // restart).  Residual buffering drift is corrected once on PLAYING.
+          window.playerState._loadedOnce = true;
+          e.target.loadVideoById({ videoId: videoId, startSeconds: Math.max(0, Math.floor(getLivePosition())) });
+        } else if (!midJoin) {
           e.target.playVideo();
         }
         // Host sends immediate progress report so the server recalibrates started_at right away
@@ -519,19 +504,18 @@ function initYouTubePlayer(videoId, startSeconds) {
         }
       },
       onStateChange: (e) => {
-        // First moment of actual playback: learn the real boot latency and
-        // fine-correct only if the compensated start still missed by >1.5s.
-        // Audio stays muted until timing is confirmed — either immediately
-        // (close enough) or on the PLAYING event after the correction seek.
+        // First moment of actual playback: correct to the live position once
+        // if we drifted during buffering, then reveal audio.  Audio stays
+        // muted until this settles — either immediately (close enough) or on
+        // the PLAYING event after the one correction seek.
         if (e.data === 1) {
           if (!window.playerState._playbackTuned) {
             window.playerState._playbackTuned = true;
-            recordLoadLatency(...YT_COMP, (Date.now() - (window.playerState._loadStartedAt || window.playerState._createdAt || Date.now())) / 1000);
             let corrected = false;
             try {
               const cur = e.target.getCurrentTime();
               const live = getLivePosition();
-              if (window.playerState.startedAt && Math.abs(live - cur) > 1.5) {
+              if (window.playerState.startedAt && Math.abs(live - cur) > 3) {
                 e.target.seekTo(live, true);
                 corrected = true;
               }
@@ -546,8 +530,10 @@ function initYouTubePlayer(videoId, startSeconds) {
           window.playerState.endTriggered = true;
           pushVideoEnded();
         }
-        // Auto-resume if paused unexpectedly
-        if (e.data === 2 && !window.playerState.endTriggered) {
+        // Auto-resume only AFTER the initial settle — never during the fragile
+        // load/seek window, where a stray resume could fight buffering and
+        // look like the video restarting.
+        if (e.data === 2 && window.playerState._settled && !window.playerState.endTriggered) {
           setTimeout(() => { window.playerState.ytPlayer?.playVideo?.(); }, 500);
         }
       },
@@ -595,7 +581,7 @@ function initSoundCloud(startPosition) {
       const live = getLivePosition();
       if (live > 1) {
         window.playerState._scSeekAt = Date.now();
-        widget.seekTo((live + getLoadCompensation(...SC_COMP)) * 1000);
+        widget.seekTo(live * 1000);
       } else {
         markSettled(); // track is at/near its start — nothing to correct
       }
@@ -620,12 +606,10 @@ function initSoundCloud(startPosition) {
       const posS = (data.currentPosition || 0) / 1000;
       const live = getLivePosition();
       if (!window.playerState.startedAt || Math.abs(posS - live) <= 2.5) {
-        recordLoadLatency(...SC_COMP,
-          (Date.now() - (window.playerState._scSeekAt || window.playerState._loadStartedAt || Date.now())) / 1000);
         markSettled();
       } else if (window.playerState._scSeekIssued && Date.now() - (window.playerState._scSeekAt || 0) > 1500) {
         window.playerState._scSeekAt = Date.now();
-        widget.seekTo((live + getLoadCompensation(...SC_COMP)) * 1000);
+        widget.seekTo(live * 1000);
       }
       return;
     }
