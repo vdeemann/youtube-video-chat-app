@@ -108,7 +108,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
         "type" => track[:type] || track.type,
         "media_id" => track[:media_id] || track.media_id,
         "embed_url" => track[:embed_url] || track.embed_url,
-        "title" => track[:title] || track.title
+        "title" => track[:title] || track.title,
+        "thumbnail" => track[:thumbnail] || track["thumbnail"]
       }
     end
 
@@ -863,7 +864,8 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
           "type" => new_track[:type] || new_track.type,
           "media_id" => new_track[:media_id] || new_track.media_id,
           "embed_url" => new_track[:embed_url] || new_track.embed_url,
-          "title" => new_track[:title] || new_track.title
+          "title" => new_track[:title] || new_track.title,
+          "thumbnail" => new_track[:thumbnail] || new_track["thumbnail"]
         }
       end
 
