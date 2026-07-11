@@ -780,6 +780,15 @@ setInterval(() => {
       }
       // Only drift-correct after grace period, with a wider threshold (5s)
       if (!inGracePeriod && Math.abs(expected - cur) > 5) window.playerState.ytPlayer.seekTo(expected, true);
+      // Resume a paused player (mirrors the SoundCloud path below).  The
+      // event-driven auto-resume ignores PAUSED during the pre-settle load
+      // window, so a pause that lands there would otherwise stick forever.
+      // Settle is guaranteed by the failsafe, so this never fights the load.
+      if (window.playerState._settled &&
+          window.playerState.ytPlayer.getPlayerState?.() === 2 &&
+          !window.playerState.endTriggered) {
+        window.playerState.ytPlayer.playVideo();
+      }
       // Host reports progress to keep the server's started_at calibrated
       if (window.playerState.isHost && cur > 0) pushVideoProgress(cur, dur || 0);
     } catch (_) {}
