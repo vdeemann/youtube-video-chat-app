@@ -268,14 +268,6 @@ function markSettled() {
     ps._unmuteFailsafe = null;
   }
 
-  // Reveal the player: playback is confirmed at the live position.
-  const cover = document.getElementById('player-cover');
-  if (cover) {
-    cover.style.transition = 'opacity 0.35s';
-    cover.style.opacity = '0';
-    setTimeout(() => cover.remove(), 400);
-  }
-
   const canUnmute = !ps._startMuted || window._userHasInteracted;
 
   try {
@@ -444,17 +436,6 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
   }
 
   if (media.type === "youtube") {
-    // Cover the player with the track artwork while it boots and seeks —
-    // otherwise YouTube's empty chrome (a black frame stuck at 0:00) shows
-    // for a couple of seconds and the join feels broken.  markSettled()
-    // fades this out the moment playback is confirmed at the live position,
-    // and its 4s failsafe guarantees the cover never sticks around.
-    const safeThumb = /^https?:\/\//.test(media.thumbnail || '') ? media.thumbnail.replace(/"/g, '&quot;') : null;
-    const cover = `
-      <div id="player-cover" class="absolute inset-0 z-10 bg-black flex items-center justify-center">
-        ${safeThumb ? `<img src="${safeThumb}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.35;filter:blur(8px);" />` : ''}
-        <div class="relative text-white/90 text-sm uppercase tracking-widest animate-pulse">Syncing to live…</div>
-      </div>`;
     container.innerHTML = `
       <div class="absolute inset-0 bg-black" id="player-host">
         <div class="absolute left-0 right-0" style="top: 76px; bottom: 100px;">
@@ -464,7 +445,6 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
             </div>
           </div>
         </div>
-        ${cover}
       </div>`;
     initYouTubePlayer(media.media_id, seekPosition);
   } else if (media.type === "soundcloud") {
