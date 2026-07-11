@@ -273,9 +273,9 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
   end
 
   @impl true
-  def handle_event("video_progress", %{"current_time" => current, "duration" => duration}, socket) do
+  def handle_event("video_progress", %{"current_time" => current, "duration" => duration} = params, socket) do
     if socket.assigns.is_host && socket.assigns.current_media do
-      RoomServer.report_progress(socket.assigns.room.id, current, duration)
+      RoomServer.report_progress(socket.assigns.room.id, params["track_id"], current, duration)
     end
     {:noreply, socket}
   end

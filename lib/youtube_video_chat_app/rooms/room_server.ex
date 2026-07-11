@@ -61,8 +61,8 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
     do: cast(room_id, {:remove_from_queue_by_user, id, uid})
   def clear_queue(room_id),
     do: cast(room_id, :clear_queue)
-  def report_progress(room_id, current_s, duration_s),
-    do: cast(room_id, {:report_progress, current_s, duration_s})
+  def report_progress(room_id, track_id, current_s, duration_s),
+    do: cast(room_id, {:report_progress, track_id, current_s, duration_s})
   def add_message(room_id, msg),
     do: cast(room_id, {:add_message, msg})
   def get_queue_page(room_id, offset, limit),
@@ -199,27 +199,52 @@ defmodule YoutubeVideoChatApp.Rooms.RoomServer do
   end
 
   # --- host progress reports (recalibrate started_at) -------------------------
+  # The room clock and the auto-advance timer are rebuilt from these, so a bad
+  # report corrupts playback for the whole room (persisted, too).  Three guards:
+  #   * track_id must match the playing track — a host tick that fires between
+  #     an advance and its player recreation carries the OLD track's position
+  #   * a report may not rewind the room by more than 30s — nothing legitimate
+  #     jumps the room backward half a track
+  #   * a duration under half the known one is not the content duration (a
+  #     preroll ad reports the AD's 6-30s length); trusting it rescheduled
+  #     auto-advance to fire within seconds and made joins churn the queue
 
   @impl true
-  def handle_cast({:report_progress, current_s, duration_s}, st) do
-    now = now_ms()
-    # Recalibrate: started_at = now - (current_s * 1000)
-    st = %{st | started_at: round(now - current_s * 1000)}
-    # Update current_track duration with the real value from the player
-    st = if duration_s > 0 && st.current_track do
-      %{st | current_track: Map.put(st.current_track, :duration, duration_s)}
-    else
-      st
+  def handle_cast({:report_progress, track_id, current_s, duration_s}, st) do
+    current_id = st.current_track && st.current_track.id
+    rewind_s =
+      if st.started_at,
+        do: (now_ms() - st.started_at) / 1000 - current_s,
+        else: 0
+
+    cond do
+      current_id == nil ->
+        {:noreply, st, @idle_timeout}
+
+      track_id != nil and track_id != current_id ->
+        Logger.debug("[RoomServer] Ignoring progress report for stale track #{track_id}")
+        {:noreply, st, @idle_timeout}
+
+      rewind_s > 30 ->
+        Logger.warning("[RoomServer] Ignoring progress report rewinding room #{st.room_id} by #{round(rewind_s)}s")
+        {:noreply, st, @idle_timeout}
+
+      true ->
+        # Recalibrate: started_at = now - (current_s * 1000)
+        st = %{st | started_at: round(now_ms() - current_s * 1000)}
+        known_duration = st.current_track[:duration] || 0
+        duration_sane = duration_s > 0 and (known_duration <= 0 or duration_s >= known_duration * 0.5)
+        # Update current_track duration with the real value from the player
+        # and reschedule the auto-advance timer from it
+        st = if duration_sane do
+          %{st | current_track: Map.put(st.current_track, :duration, duration_s)}
+          |> schedule_timer(max(0, duration_s - current_s) + @auto_advance_buffer_s)
+        else
+          st
+        end
+        persist(st)
+        {:noreply, st, @idle_timeout}
     end
-    # Reschedule timer with real duration
-    st = if duration_s > 0 do
-      remaining = max(0, duration_s - current_s) + @auto_advance_buffer_s
-      schedule_timer(st, remaining)
-    else
-      st
-    end
-    persist(st)
-    {:noreply, st, @idle_timeout}
   end
 
   # --- chat messages ----------------------------------------------------------

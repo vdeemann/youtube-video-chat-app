@@ -699,13 +699,29 @@ function pushVideoProgress(currentTime, duration) {
   // would recalibrate the room clock to the wrong position and rewind the
   // track for everyone in the room (persisted, too).
   if (!window.playerState._settled) return;
+  // Only report a position that agrees with the room clock.  When the player
+  // clock diverges (a preroll ad reporting the AD's time, a player that
+  // restarted at 0, a stalled load), reporting it would pin the room clock to
+  // the wrong position — the server then advances tracks off a bogus timer
+  // and every join/rejoin lands at the wrong spot.  Out-of-sync players get
+  // corrected by the drift seek; they don't get to redefine the room.
+  if (window.playerState.startedAt) {
+    const live = getLivePosition();
+    if (Math.abs(currentTime - live) > 5) {
+      console.log("[pushVideoProgress] Skipped out-of-sync report:", currentTime.toFixed(1), "vs live", live.toFixed(1));
+      return;
+    }
+  }
+  // Tag with the track id so the server can drop reports from a client still
+  // playing the previous track (same dedupe as video_ended).
+  const payload = { current_time: currentTime, duration, track_id: window.playerState.trackId || null };
   if (window._roomHookPushEvent) {
-    window._roomHookPushEvent("video_progress", { current_time: currentTime, duration });
+    window._roomHookPushEvent("video_progress", payload);
     return;
   }
   const hook = document.getElementById('room-container');
   if (hook?._phxHookPushEvent) {
-    hook._phxHookPushEvent("video_progress", { current_time: currentTime, duration });
+    hook._phxHookPushEvent("video_progress", payload);
   }
 }
 
@@ -750,8 +766,14 @@ setInterval(() => {
     try {
       const cur = window.playerState.ytPlayer.getCurrentTime();
       const dur = window.playerState.ytPlayer.getDuration();
-      // If we know the real duration and we're past it, trigger end
-      if (dur > 0 && cur >= dur - 0.5 && !window.playerState.endTriggered) {
+      // If we know the real duration and we're past it, trigger end.  Only
+      // trust it when the player clock matches the room clock and the
+      // duration looks like content — during a preroll ad getDuration()
+      // returns the AD's length (6-30s), and treating that as track end
+      // advanced the queue every few seconds (the join "loop").  Real ends
+      // are also covered by the player's ENDED event and the server timer.
+      if (dur > 60 && cur >= dur - 0.5 && Math.abs(expected - cur) <= 5 &&
+          !window.playerState.endTriggered) {
         window.playerState.endTriggered = true;
         pushVideoEnded();
         return;
