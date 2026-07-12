@@ -249,6 +249,37 @@ function logSync(event, detail) {
 }
 window.syncLog = () => window._syncEvents.join('\n');
 
+// Loop detector: three player creations inside 20s is never normal.  When it
+// happens, surface a one-click "Copy log" toast so the diagnostic timeline
+// can be reported without opening DevTools.
+window._createTimes = [];
+function noteCreateForLoopDetector() {
+  const now = Date.now();
+  window._createTimes = window._createTimes.filter(t => now - t < 20000);
+  window._createTimes.push(now);
+  if (window._createTimes.length >= 3) showDiagToast();
+}
+
+function showDiagToast() {
+  if (document.getElementById('diag-toast')) return;
+  const el = document.createElement('div');
+  el.id = 'diag-toast';
+  el.style.cssText = 'position:fixed;bottom:110px;left:16px;z-index:200;display:flex;gap:10px;align-items:center;' +
+    'padding:10px 14px;background:rgba(0,0,0,.9);border:1px solid rgba(239,68,68,.6);border-radius:12px;' +
+    'color:#fff;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5);';
+  el.innerHTML = '<span>Playback sync problem detected</span>' +
+    '<button id="diag-copy" style="padding:4px 10px;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;border:0">Copy log</button>' +
+    '<button id="diag-close" style="color:#9ca3af;cursor:pointer;background:none;border:0;font-size:14px">✕</button>';
+  document.body.appendChild(el);
+  document.getElementById('diag-copy').onclick = () => {
+    try {
+      navigator.clipboard.writeText(window.syncLog());
+      document.getElementById('diag-copy').textContent = 'Copied!';
+    } catch (_) {}
+  };
+  document.getElementById('diag-close').onclick = () => el.remove();
+}
+
 // ===========================================
 // SETTLE-THEN-UNMUTE
 // ===========================================
@@ -400,6 +431,7 @@ function syncPlayer(media, startedAt, serverNow, isHost) {
 
   logSync('create', `${media.type} ${media.media_id} seek=${seekPosition.toFixed(1)}s ` +
     `prev=${ps.trackId || ps.mediaId || 'none'} sameEntry=${sameEntry} hadDom=${!!existingPlayer}`);
+  noteCreateForLoopDetector();
 
   // Store clockOffset so onReady/READY can recompute a fresh position
   window._clockOffset = clockOffset;
