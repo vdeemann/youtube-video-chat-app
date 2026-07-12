@@ -194,6 +194,13 @@ defmodule YoutubeVideoChatAppWeb.RoomLive.Show do
     else
       {[], nil}
     end
+  rescue
+    # A DB hiccup (cold instance) must not crash the room mount — the crash/
+    # remount cycle rebuilds the player and restarts playback.  Playlists
+    # reload on the next natural refresh.
+    error ->
+      Logger.warning("[RoomLive.Show] load_playlists failed (degrading to empty): #{inspect(error)}")
+      {[], nil}
   end
 
   # Refresh the cached user_playlists list and optionally the main_playlist.

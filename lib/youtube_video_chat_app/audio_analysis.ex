@@ -12,6 +12,7 @@ defmodule YoutubeVideoChatApp.AudioAnalysis do
   at most one analysis finishes at a time (the worker is serial).
   """
   import Ecto.Query
+  require Logger
   alias Phoenix.PubSub
   alias YoutubeVideoChatApp.AudioAnalysis.TrackAnalysis
   alias YoutubeVideoChatApp.Repo
@@ -25,8 +26,18 @@ defmodule YoutubeVideoChatApp.AudioAnalysis do
     Application.get_env(:youtube_video_chat_app, :audio_analyzer, [])[:url] != nil
   end
 
+  # Reads are decorative (badges/pill) and are called from room LiveViews on
+  # mount and on every room broadcast.  They must NEVER raise: a DB timeout
+  # on a cold instance would crash the LiveView, which rebuilds the player on
+  # remount — with broadcasts arriving every few seconds that turned into a
+  # crash/remount cycle that made freshly-joined videos restart on loop.
+
   def get(media_type, media_id) when is_binary(media_type) and is_binary(media_id) do
     Repo.get_by(TrackAnalysis, media_type: media_type, media_id: media_id)
+  rescue
+    error ->
+      Logger.warning("[AudioAnalysis] get/2 failed (returning nil): #{inspect(error)}")
+      nil
   end
 
   def get(_media_type, _media_id), do: nil
@@ -46,6 +57,10 @@ defmodule YoutubeVideoChatApp.AudioAnalysis do
     from(a in TrackAnalysis, where: ^conditions, where: a.status == "complete")
     |> Repo.all()
     |> Map.new(fn a -> {{a.media_type, a.media_id}, payload(a)} end)
+  rescue
+    error ->
+      Logger.warning("[AudioAnalysis] get_payloads/1 failed (returning empty): #{inspect(error)}")
+      %{}
   end
 
   @doc """
