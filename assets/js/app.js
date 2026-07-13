@@ -599,12 +599,17 @@ function initYouTubePlayer(videoId, startSeconds) {
         }
       },
       onError: (e) => {
-        logSync('yt_error', String(e.data));
+        logSync('yt_error', `${e.data} — unplayable, advancing`);
         console.error("[YT Player] Error:", e.data);
-        // On error (video unavailable, embed blocked, etc.), advance the queue
+        // This player can never play (embed disabled, deleted, region lock).
+        // Mark it dead so the sync loop stops seek-thrashing it (each seek
+        // made the embed flash its first frames — the visible restart loop),
+        // and advance the queue immediately, bypassing the ended grace
+        // period (errors arrive within ~1s of creation).
+        window.playerState.playerErrored = true;
         if (!window.playerState.endTriggered) {
           window.playerState.endTriggered = true;
-          setTimeout(() => pushVideoEnded(), 1000);
+          setTimeout(() => pushVideoEnded(true), 1000);
         }
       }
     }
@@ -721,17 +726,21 @@ function showPlaceholder() {
 // ===========================================
 // PUSH EVENTS TO SERVER
 // ===========================================
-function pushVideoEnded() {
+function pushVideoEnded(force = false) {
   // Grace period: don't report "ended" within the first 5 seconds after player
   // creation.  Newly-joined clients sometimes get a spurious state-0 / FINISH
   // event while the player is still loading and seeking to the live position.
+  // `force` bypasses it for explicit player ERRORS (embed-blocked/unavailable
+  // videos error within ~1s of creation and can never play — suppressing
+  // their skip left the room stuck on a dead player for the track's full
+  // duration, with the sync loop flashing it every 5s).
   const age = Date.now() - (window.playerState._createdAt || 0);
-  if (age < 5000) {
+  if (!force && age < 5000) {
     logSync('ended_suppressed', `player only ${Math.round(age / 1000)}s old (grace period)`);
     window.playerState.endTriggered = false;   // allow a real ended event later
     return;
   }
-  logSync('ended_sent', `track=${window.playerState.trackId || 'none'}`);
+  logSync('ended_sent', `track=${window.playerState.trackId || 'none'}${force ? ' (forced: player error)' : ''}`);
 
   // Include the track ID so the server can deduplicate (prevents stale reports
   // from a client that was still playing the previous track from skipping the new one).
@@ -783,6 +792,10 @@ setInterval(() => {
   _syncLoopCount++;
   if (!window.playerState.startedAt) return;
   if (window.playerState.endTriggered) return;
+  // A player that errored (embed-blocked/unavailable video) can never play —
+  // seeking it just makes the embed flash over and over.  Leave it alone;
+  // the error handler has already requested a queue advance.
+  if (window.playerState.playerErrored) return;
 
   const expected = getLivePosition();
 
